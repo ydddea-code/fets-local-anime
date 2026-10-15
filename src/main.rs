@@ -1,71 +1,71 @@
 mod config;
+mod desktop;
 mod error;
 mod routes;
 mod services;
 mod state;
 
-use anyhow::Context;
+use crate::config::Settings;
+use crate::services::hls::HlsManager;
+use crate::services::metadata::MetadataClient;
+use crate::state::AppState;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-use tokio::net::TcpListener;
-use tracing::info;
+use std::path::Path;
+use std::str::FromStr;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,tower_http=warn,sqlx=warn".into()),
+        )
         .init();
 
-    let settings = config::Settings::load()?;
-    tokio::fs::create_dir_all(&settings.data.dir).await?;
-    let db_path = PathBuf::from(&settings.data.dir).join("app.db");
-    let options = SqliteConnectOptions::new()
-        .filename(&db_path)
+    let data_dir = desktop::data_dir();
+    let settings = Settings::load_desktop(&data_dir);
+    ensure_layout(&data_dir)?;
+
+    let database_path = data_dir.join("app.db");
+    let options = SqliteConnectOptions::from_str(&database_path.to_string_lossy())?
         .create_if_missing(true)
-        .foreign_keys(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        .foreign_keys(false)
+        .busy_timeout(std::time::Duration::from_secs(5));
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
-        .await
-        .context("connect to SQLite")?;
+        .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
 
-    if settings.server.host == "0.0.0.0" && !settings.auth.enabled {
-        tracing::warn!("server binds to all interfaces without authentication");
-    }
-    let bind: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
-        .parse()
-        .context("invalid server host/port")?;
-    let hls = Arc::new(services::hls::HlsManager::new(
-        PathBuf::from(&settings.data.dir).join("hls"),
-        settings.ffmpeg.max_concurrent_transcodes,
+    let hls = Arc::new(HlsManager::new(
+        data_dir.join("hls"),
+        settings.ffmpeg.max_concurrent_sessions,
         settings.ffmpeg.hls_segment_seconds,
     ));
-    let cleanup_hls = Arc::clone(&hls);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            cleanup_hls.cleanup_idle(Duration::from_secs(120)).await;
-        }
-    });
-    let state = Arc::new(state::AppState {
-        pool,
-        settings,
-        hls,
-        metadata: services::metadata::MetadataClient::new()?,
-        sessions: Arc::default(),
-    });
-    if state.settings.library.scan_on_startup {
-        routes::scan_startup(&state).await?;
-    }
-    if state.settings.library.watch {
+    let metadata = MetadataClient::new()?;
+    let state = Arc::new(AppState::new(pool, settings, hls, metadata));
+    let app = routes::router(Arc::clone(&state));
+
+    if state.settings.read().expect("settings lock").library.watch {
         tokio::spawn(services::watcher::watch_libraries(Arc::clone(&state)));
     }
-    let app = routes::router(state);
-    let listener = TcpListener::bind(bind).await?;
-    info!(%bind, "anime-stream is listening");
+    routes::scan_startup(&state).await.ok();
+
+    // Loopback-only HTTP server on a free port (8010..8030 by default).
+    let listener = tokio::net::TcpListener::bind((
+        state.settings.read().expect("settings lock").server.host.as_str(),
+        state.settings.read().expect("settings lock").server.port,
+    ))
+    .await?;
+    tracing::info!("Fets Anime ready at http://127.0.0.1:{}", state.settings.read().expect("settings lock").server.port);
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn ensure_layout(data_dir: &Path) -> anyhow::Result<()> {
+    for directory in ["thumbs", "subtitles", "hls"] {
+        std::fs::create_dir_all(data_dir.join(directory))?;
+    }
     Ok(())
 }

@@ -1,16 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{fs, path::Path};
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-pub struct Settings {
+pub struct Config {
     pub server: ServerConfig,
     pub library: LibraryConfig,
-    pub data: DataConfig,
     pub ffmpeg: FfmpegConfig,
+    pub data: DataConfig,
     pub metadata: MetadataConfig,
     pub auth: AuthConfig,
-    #[serde(flatten)]
     pub desktop: DesktopConfig,
 }
 
@@ -20,102 +19,127 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
 }
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LibraryConfig {
     pub paths: Vec<String>,
     pub extensions: Vec<String>,
-    pub scan_on_startup: bool,
+    /// Watch the configured folders for file changes and rescan automatically.
     pub watch: bool,
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct DataConfig {
-    pub dir: String,
-}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct FfmpegConfig {
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
     pub hls_segment_seconds: u32,
-    pub max_concurrent_transcodes: usize,
+    pub max_concurrent_sessions: usize,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DataConfig {
+    pub dir: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct MetadataConfig {
     pub anilist_enabled: bool,
-    pub cache_ttl_hours: u64,
+    pub cache_ttl_hours: i64,
+    pub timeout_secs: u64,
 }
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AuthConfig {
+    /// Optional password protection; only meaningful in `server-mode`. The
+    /// desktop app ships with this disabled (local-only loopback server).
     pub enabled: bool,
     pub password: String,
 }
 
-/// Desktop-only options (player preferences and tool overrides). These live in
-/// `settings.toml` inside the app data directory and are edited from the
-/// Pengaturan page instead of a manual config file.
+/// Desktop-shell settings, editable from the Pengaturan page and persisted
+/// to `settings.toml` in the data directory on every change.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DesktopConfig {
-    /// "auto" (HTML5 first, mpv fallback), "html5", or "mpv".
+    /// "auto" | "html5" | "mpv"
     pub player: String,
-    /// Explicit path to mpv.exe; empty means auto-detect.
+    /// Empty = auto-discover mpv.exe (sidecar, PATH, common install dirs).
     pub mpv_path: String,
-    /// Theme: "dark", "light", or "system".
+    /// "dark" | "light" | "system"
     pub theme: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 8010,
+            },
+            library: LibraryConfig {
+                paths: vec![default_library_dir()],
+                extensions: vec![
+                    "mkv".into(),
+                    "mp4".into(),
+                    "webm".into(),
+                    "avi".into(),
+                    "m4v".into(),
+                ],
+                watch: true,
+            },
+            ffmpeg: FfmpegConfig {
+                ffmpeg_path: if cfg!(windows) { "ffmpeg.exe".into() } else { "ffmpeg".into() },
+                ffprobe_path: if cfg!(windows) { "ffprobe.exe".into() } else { "ffprobe".into() },
+                hls_segment_seconds: 6,
+                max_concurrent_sessions: 2,
+            },
+            data: DataConfig {
+                dir: default_data_dir(),
+            },
+            metadata: MetadataConfig {
+                anilist_enabled: true,
+                cache_ttl_hours: 168,
+                timeout_secs: 10,
+            },
+            auth: AuthConfig::default(),
+            desktop: DesktopConfig::default(),
+        }
+    }
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self {
-            host: "127.0.0.1".into(),
-            port: 8080,
-        }
+        Self { host: "127.0.0.1".into(), port: 8010 }
     }
 }
 impl Default for LibraryConfig {
     fn default() -> Self {
-        Self {
-            paths: Vec::new(),
-            extensions: vec![
-                "mkv".into(),
-                "mp4".into(),
-                "webm".into(),
-                "avi".into(),
-                "m4v".into(),
-            ],
-            scan_on_startup: true,
-            // File watcher is on by default in desktop mode so new files appear automatically.
-            watch: true,
-        }
-    }
-}
-impl Default for DataConfig {
-    fn default() -> Self {
-        Self {
-            dir: crate::desktop::default_data_dir().to_string_lossy().to_string(),
-        }
+        Config::default().library
     }
 }
 impl Default for FfmpegConfig {
     fn default() -> Self {
-        Self {
-            ffmpeg_path: "ffmpeg".into(),
-            ffprobe_path: "ffprobe".into(),
-            hls_segment_seconds: 6,
-            max_concurrent_transcodes: 2,
-        }
+        Config::default().ffmpeg
+    }
+}
+impl Default for DataConfig {
+    fn default() -> Self {
+        Config::default().data
     }
 }
 impl Default for MetadataConfig {
     fn default() -> Self {
-        Self {
-            anilist_enabled: false,
-            cache_ttl_hours: 24,
-        }
+        Config::default().metadata
+    }
+}
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self { enabled: false, password: String::new() }
     }
 }
 impl Default for DesktopConfig {
@@ -128,106 +152,140 @@ impl Default for DesktopConfig {
     }
 }
 
-impl Settings {
-    /// Load settings for classic server mode: optional `config.toml` next to
-    /// the binary plus `ANIME__*` environment overrides. Kept behind the
-    /// `server-mode` feature; the desktop app uses [`Settings::load_desktop`].
-    #[allow(dead_code)]
-    pub fn load() -> anyhow::Result<Self> {
-        let mut builder = config::Config::builder()
-            .set_default("server.host", "127.0.0.1")?
-            .set_default("server.port", 8080)?;
-        if Path::new("config.toml").exists() {
-            builder = builder.add_source(config::File::with_name("config").required(false));
-        }
-        builder = builder.add_source(config::Environment::with_prefix("ANIME").separator("__"));
-        let settings: Self = builder.build()?.try_deserialize()?;
-        settings.validate_library_paths()?;
-        Ok(settings)
+fn default_data_dir() -> String {
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+    #[cfg(not(windows))]
+    let base = directories_hint();
+
+    fn directories_hint() -> Option<std::path::PathBuf> {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share")))
     }
 
-    /// Desktop mode: persisted user settings from `<data dir>/settings.toml`,
-    /// falling back to defaults when the file does not exist yet. An optional
-    /// `config.toml` beside the executable is still honored but no longer
-    /// required. Auth is always disabled in desktop mode.
+    base.map(|dir| dir.join("fets-anime").to_string_lossy().into_owned())
+        .unwrap_or_else(|| "./data".into())
+}
+
+fn default_library_dir() -> String {
+    #[cfg(windows)]
+    let profile = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let profile = std::env::var_os("HOME");
+    profile
+        .map(|p| std::path::PathBuf::from(p).join("Videos/Anime").to_string_lossy().into_owned())
+        .unwrap_or_else(|| "./library".into())
+}
+
+type Settings = Config;
+
+impl Settings {
+    /// Load the classic layered config (config.toml + environment). Used by
+    /// the optional `server-mode` build.
+    pub fn load() -> anyhow::Result<Self> {
+        let builder = config::Environment::with_prefix("ANIME_STREAM")
+            .separator("__")
+            .try_parsing(true);
+        let cfg = config::Config::builder()
+            .add_source(config::File::with_name("config"))
+            .add_source(builder)
+            .build()?;
+        Ok(cfg.try_deserialize()?)
+    }
+
+    /// Desktop mode: everything lives under %APPDATA%\fets-anime (or the
+    /// XDG equivalent). A pre-existing settings.toml overrides defaults;
+    /// otherwise one is created so users can see where configuration lives.
     pub fn load_desktop(data_dir: &Path) -> Self {
-        let mut settings = Self::default();
-        settings.data.dir = data_dir.to_string_lossy().to_string();
-        let config_toml = data_dir.join("settings.toml");
-        if let Ok(text) = std::fs::read_to_string(&config_toml) {
-            match toml::from_str::<Settings>(&text) {
-                Ok(saved) => {
-                    let dir = settings.data.dir.clone();
-                    settings = saved;
-                    settings.data.dir = dir;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, path = %config_toml.display(), "invalid settings.toml; using defaults")
-                }
-            }
-        } else if Path::new("config.toml").exists() {
-            // Optional escape hatch for power users; not part of the normal flow.
-            if let Ok(legacy) = Self::load() {
-                let dir = settings.data.dir.clone();
-                settings = legacy;
-                settings.data.dir = dir;
-            }
-        }
+        let _ = fs::create_dir_all(data_dir);
+        let path = data_dir.join("settings.toml");
+        let mut settings = match fs::read_to_string(&path) {
+            Ok(contents) => toml::from_str::<Settings>(&contents).unwrap_or_default(),
+            Err(_) => Settings::default(),
+        };
+        // Desktop app is single-user local software: never require login.
         settings.auth.enabled = false;
-        settings.auth.password.clear();
-        let _ = settings.validate_library_paths();
+        settings.data.dir = data_dir.to_string_lossy().into_owned();
+        if !path.exists() {
+            let _ = settings.save();
+        }
         settings
     }
 
-    /// Persist current settings to `<data dir>/settings.toml`.
-    pub fn save(&self) -> anyhow::Result<()> {
-        let dir = PathBuf::from(&self.data.dir);
-        std::fs::create_dir_all(&dir)?;
-        let text = toml::to_string_pretty(self)?;
-        std::fs::write(dir.join("settings.toml"), text)?;
-        Ok(())
-    }
-
-    /// Warn about configured library folders that are currently inaccessible
-    /// (removed drive, offline NAS share). Entries are kept so an offline UNC
-    /// share reappears in scans once it becomes reachable again.
-    fn validate_library_paths(&mut self) -> anyhow::Result<()> {
-        for path in &self.library.paths {
-            if !Path::new(path).is_dir() {
-                tracing::warn!(path, "library path is not accessible right now; scans will skip it until it returns");
-            }
-        }
-        if self.auth.enabled && self.auth.password.is_empty() {
-            anyhow::bail!("auth.password must be set when authentication is enabled");
-        }
-        Ok(())
+    /// Persist the current settings next to the database (settings.toml).
+    pub fn save(&self) -> Result<(), AppError> {
+        let path = Path::new(&self.data.dir).join("settings.toml");
+        let text = toml::to_string_pretty(self).map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
+        fs::write(path, text).map_err(|e| crate::error::AppError::Internal(e.to_string()))
     }
 }
+
+use crate::error::AppError;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn desktop_settings_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut settings = Settings::load_desktop(dir.path());
-        assert!(!settings.auth.enabled);
-        assert!(settings.library.watch);
-        settings.desktop.player = "mpv".into();
-        settings.library.paths.push(dir.path().join("Anime").to_string_lossy().into());
-        settings.save().unwrap();
-        let reloaded = Settings::load_desktop(dir.path());
-        assert_eq!(reloaded.desktop.player, "mpv");
-        assert_eq!(reloaded.library.paths, settings.library.paths);
-        assert_eq!(reloaded.data.dir, settings.data.dir);
+    fn parses_nested_toml() {
+        let settings: Settings = toml::from_str(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 9000
+[library]
+paths = ["/anime"]
+extensions = ["mkv", "mp4"]
+watch = false
+[auth]
+enabled = true
+password = "secret"
+"#,
+        )
+        .unwrap();
+        assert_eq!(settings.server.port, 9000);
+        assert_eq!(settings.library.paths, vec!["/anime"]);
+        assert!(!settings.library.watch);
+        assert!(settings.auth.enabled);
     }
 
     #[test]
-    fn invalid_settings_file_falls_back_to_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("settings.toml"), "this is not valid toml [[[").unwrap();
-        let settings = Settings::load_desktop(dir.path());
+    fn desktop_defaults_disable_auth_and_enable_watcher() {
+        let settings = Settings::default();
+        assert!(!settings.auth.enabled);
+        assert!(settings.library.watch);
         assert_eq!(settings.desktop.player, "auto");
+        assert_eq!(settings.desktop.theme, "dark");
+    }
+
+    #[test]
+    fn load_desktop_creates_settings_file_and_forces_auth_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seeded = Settings::default();
+        seeded.auth.enabled = true;
+        seeded.auth.password = "x".into();
+        seeded.desktop.player = "mpv".into();
+        std::fs::write(
+            dir.path().join("settings.toml"),
+            toml::to_string_pretty(&seeded).unwrap(),
+        )
+        .unwrap();
+        let settings = Settings::load_desktop(dir.path());
+        assert!(!settings.auth.enabled);
+        assert_eq!(settings.desktop.player, "mpv");
+        assert_eq!(settings.data.dir, dir.path().to_string_lossy());
+    }
+
+    #[test]
+    fn save_roundtrips_through_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::load_desktop(dir.path());
+        settings.library.paths.push(dir.path().join("Anime").to_string_lossy().into_owned());
+        settings.desktop.theme = "light".into();
+        settings.save().unwrap();
+        let reloaded = Settings::load_desktop(dir.path());
+        assert_eq!(reloaded.library.paths.len(), 1);
+        assert_eq!(reloaded.desktop.theme, "light");
     }
 }

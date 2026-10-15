@@ -76,7 +76,8 @@ Prasyarat sistem: Rust toolchain, FFmpeg & ffprobe tersedia di `PATH` (path dapa
 - Auto-play episode berikutnya, tandai "sudah ditonton".
 
 ### 3.4 Nanti
-- Multi-profil sederhana (PIN), pengaturan tema, PWA, import/export library, Docker image.
+- Multi-profil sederhana (PIN), pengaturan tema, PWA, import/export library.
+- Catatan: Docker dan build lintas platform (macOS/Linux) tidak lagi didukung; aplikasi khusus Windows.
 
 ---
 
@@ -415,7 +416,7 @@ Kerjakan **satu milestone per sesi/PR**. Setiap milestone harus `cargo fmt`, `ca
 - AniList client + cache, tombol refresh, `notify` watcher, debounce.
 
 ### M9 — Polish & rilis
-- Auth opsional, pengaturan di UI, Dockerfile, README, CI (GitHub Actions: fmt, clippy, test), build rilis per OS.
+- Auth opsional, pengaturan di UI, README, CI (GitHub Actions khusus runner `windows-latest`: fmt, clippy, test), build rilis Windows saja.
 
 ---
 

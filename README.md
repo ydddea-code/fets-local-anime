@@ -59,15 +59,10 @@ password = "ganti-dengan-password-kuat"
 
 Jangan mengekspos server ke internet tanpa TLS dan perlindungan jaringan yang sesuai. Tanpa autentikasi, gunakan bind localhost.
 
-### Docker
+## Platform
 
-Build image dengan `docker build -t anime-stream .`. Siapkan `config.toml` di host dengan path `/library`, auth aktif dan password kuat; lalu jalankan:
-
-```powershell
-docker run --rm -p 8080:8080 -v "${PWD}/config.toml:/app/config.toml:ro" -v "D:/Anime:/library:ro" -v "anime-data:/data" anime-stream
-```
-
-Image runtime menyertakan FFmpeg/ffprobe. Konfigurasi data default diarahkan ke volume `/data`.
+Aplikasi ini adalah aplikasi desktop Windows 10/11 (x64). Build lintas platform
+(macOS/Linux) dan Docker tidak lagi didukung; gunakan langsung dari Windows.
 
 ## Endpoint
 
@@ -92,7 +87,7 @@ Klien memakai ID database untuk streaming dan tidak dapat memilih path arbitrer.
 
 ## Status
 
-M0–M9 menyediakan fitur dasar, ffprobe, thumbnail, subtitle eksternal/embedded, HLS on-demand, AniList metadata manual, file watcher opsional, autentikasi password opsional, Dockerfile, dan CI. `hls.js` 1.7.3 disertakan lokal agar pemutaran HLS tidak memerlukan internet. Metadata AniList mati secara default dan dapat diaktifkan melalui `[metadata]`; watcher juga mati secara default dan dapat diaktifkan melalui `[library]`. Pembaruan metadata mempertahankan nama anime yang dimasukkan pengguna dan metadata dapat dikunci dari halaman anime. CI menjalankan fmt, clippy, test, dan build release pada Linux, Windows, serta macOS. Fitur lanjutan yang belum ada mencakup status job scan, Askama/HTMX, dan build installer.
+M0–M9 menyediakan fitur dasar, ffprobe, thumbnail, subtitle eksternal/embedded, HLS on-demand, AniList metadata manual, file watcher opsional, autentikasi password opsional, dan CI. `hls.js` 1.7.3 disertakan lokal agar pemutaran HLS tidak memerlukan internet. Metadata AniList mati secara default dan dapat diaktifkan melalui `[metadata]`; watcher juga mati secara default dan dapat diaktifkan melalui `[library]`. Pembaruan metadata mempertahankan nama anime yang dimasukkan pengguna dan metadata dapat dikunci dari halaman anime. CI hanya berjalan di runner `windows-latest`: fmt, clippy, test, dan build release Windows. Fitur lanjutan yang belum ada mencakup status job scan, Askama/HTMX, dan build installer.
 
 ## Pemeriksaan
 
