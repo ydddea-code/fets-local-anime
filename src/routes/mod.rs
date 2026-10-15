@@ -53,6 +53,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/anime/:id/episodes", post(add_episode))
         .route("/api/library/scan", post(scan_library))
+        .route("/api/library/status", get(scan_status))
+        .route("/api/library/events", get(scan_events))
         .route("/api/library/add-folder", post(add_library_folder))
         .route("/api/library/remove-folder", post(remove_library_folder))
         .route("/api/settings", get(get_settings).post(save_settings))
@@ -444,7 +446,7 @@ async fn settings_page(State(state): State<Arc<AppState>>) -> Html<String> {
         r#"<h1>Pengaturan</h1>
       <section class="card"><h2>Folder anime</h2><p class="muted">Setiap subfolder menjadi satu anime.</p>
       <div class="button-row"><button id="add-folder" type="button">Tambah Folder</button><button id="scan-library" class="secondary" type="button">Pindai ulang</button></div>
-      <ul id="library-folders" class="folder-list"></ul><div id="scan-status" role="status" aria-live="polite"></div></section>
+      <ul id="library-folders" class="folder-list"></ul><progress id="scan-progress" max="100" value="0" hidden></progress><div id="scan-status" role="status" aria-live="polite"></div></section>
       <section class="card"><h2>Pemutar</h2><label>Pemutar default<select id="player"><option value="auto">Otomatis (HTML5 lalu mpv)</option><option value="html5">HTML5 saja</option><option value="mpv">mpv selalu</option></select></label>
       <label>mpv.exe <div class="input-row"><input id="mpv-path"><button class="secondary" type="button" data-pick="mpv_path">Pilih mpv.exe</button></div></label>
       <label>ffmpeg.exe <div class="input-row"><input id="ffmpeg-path"><button class="secondary" type="button" data-pick="ffmpeg_path">Pilih ffmpeg.exe</button></div></label>
@@ -483,8 +485,8 @@ async fn add_library_folder(
             settings.save()?;
         }
     }
-    let scanned = scan_folders(&state).await?;
-    Ok(Json(serde_json::json!({"path": path, "scanned": scanned})))
+    let job_id = start_scan(Arc::clone(&state))?;
+    Ok(Json(serde_json::json!({"path": path, "job_id": job_id})))
 }
 
 async fn remove_library_folder(
@@ -744,8 +746,126 @@ fn validate_library_path(state: &AppState, input: &str) -> Result<PathBuf, AppEr
 async fn scan_library(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let found = scan_folders(&state).await?;
-    Ok(Json(serde_json::json!({"scanned": found})))
+    let job_id = start_scan(Arc::clone(&state))?;
+    Ok(Json(serde_json::json!({"job_id": job_id})))
+}
+
+#[derive(Serialize)]
+struct ScanStatus {
+    job_id: Option<String>,
+    running: bool,
+    total: u64,
+    done: u64,
+    current: String,
+    last_result: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ScanEvent {
+    job_id: String,
+    state: &'static str,
+    total: u64,
+    done: u64,
+    current: String,
+    message: Option<String>,
+}
+
+async fn scan_status(State(state): State<Arc<AppState>>) -> Json<ScanStatus> {
+    let active = state.scan.lock().expect("scan lock").clone();
+    let status = if let Some(job) = active {
+        ScanStatus {
+            job_id: Some(job.id.clone()),
+            running: true,
+            total: job.total.load(std::sync::atomic::Ordering::Relaxed),
+            done: job.done.load(std::sync::atomic::Ordering::Relaxed),
+            current: job.current.lock().expect("scan current lock").clone(),
+            last_result: None,
+        }
+    } else {
+        ScanStatus {
+            job_id: None,
+            running: false,
+            total: 0,
+            done: 0,
+            current: String::new(),
+            last_result: state.last_scan.lock().expect("last scan lock").clone(),
+        }
+    };
+    Json(status)
+}
+
+async fn scan_events(State(state): State<Arc<AppState>>) -> Response {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    state
+        .scan_listeners
+        .lock()
+        .expect("scan listeners lock")
+        .push(tx);
+    let body = Body::from_stream(async_stream::stream! {
+        while let Some(event) = rx.recv().await {
+            yield Ok::<String, std::convert::Infallible>(format!("data: {event}\n\n"));
+        }
+    });
+    let mut response = Response::new(body);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+}
+
+fn publish_scan_event(state: &AppState, event: ScanEvent) {
+    if let Ok(message) = serde_json::to_string(&event) {
+        state
+            .scan_listeners
+            .lock()
+            .expect("scan listeners lock")
+            .retain(|listener| listener.send(message.clone()).is_ok());
+    }
+}
+
+pub(crate) fn start_scan(state: Arc<AppState>) -> Result<String, AppError> {
+    let mut active = state.scan.lock().expect("scan lock");
+    if let Some(job) = active.as_ref() {
+        return Ok(job.id.clone());
+    }
+    let job = Arc::new(crate::state::ScanJob {
+        id: uuid::Uuid::new_v4().to_string(),
+        total: std::sync::atomic::AtomicU64::new(0),
+        done: std::sync::atomic::AtomicU64::new(0),
+        current: std::sync::Mutex::new(String::new()),
+    });
+    let job_id = job.id.clone();
+    *active = Some(Arc::clone(&job));
+    drop(active);
+    tokio::spawn(async move {
+        let result = scan_folders_with_job(&state, Some(Arc::clone(&job))).await;
+        let message = match result {
+            Ok(count) => format!("Pemindaian selesai. {count} file video ditemukan."),
+            Err(error) => format!("Pemindaian gagal: {error}"),
+        };
+        *job.current.lock().expect("scan current lock") = message.clone();
+        let _ = state
+            .last_scan
+            .lock()
+            .map(|mut previous| *previous = Some(message.clone()));
+        let _ = state.scan.lock().map(|mut active| *active = None);
+        publish_scan_event(
+            &state,
+            ScanEvent {
+                job_id: job.id.clone(),
+                state: "complete",
+                total: job.total.load(std::sync::atomic::Ordering::Relaxed),
+                done: job.done.load(std::sync::atomic::Ordering::Relaxed),
+                current: message.clone(),
+                message: Some(message),
+            },
+        );
+    });
+    Ok(job_id)
 }
 
 pub async fn scan_startup(state: &AppState) -> Result<(), AppError> {
@@ -753,6 +873,13 @@ pub async fn scan_startup(state: &AppState) -> Result<(), AppError> {
 }
 
 async fn scan_folders(state: &AppState) -> Result<usize, AppError> {
+    scan_folders_with_job(state, None).await
+}
+
+async fn scan_folders_with_job(
+    state: &AppState,
+    job: Option<Arc<crate::state::ScanJob>>,
+) -> Result<usize, AppError> {
     let mut found = 0usize;
     for configured_root in &state.settings_snapshot().library.paths {
         let root = match FsPath::new(configured_root).canonicalize() {
@@ -771,8 +898,30 @@ async fn scan_folders(state: &AppState) -> Result<usize, AppError> {
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
         files.sort();
+        if let Some(job) = &job {
+            job.total
+                .fetch_add(files.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         let present: HashSet<PathBuf> = files.iter().cloned().collect();
         for (file_index, file) in files.into_iter().enumerate() {
+            if let Some(job) = &job {
+                let done = job.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                *job.current.lock().expect("scan current lock") =
+                    crate::desktop::display_path(&file);
+                if done % 5 == 0 || done == job.total.load(std::sync::atomic::Ordering::Relaxed) {
+                    publish_scan_event(
+                        state,
+                        ScanEvent {
+                            job_id: job.id.clone(),
+                            state: "running",
+                            total: job.total.load(std::sync::atomic::Ordering::Relaxed),
+                            done,
+                            current: job.current.lock().expect("scan current lock").clone(),
+                            message: None,
+                        },
+                    );
+                }
+            }
             let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !state
                 .settings_snapshot()
@@ -1382,6 +1531,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_endpoint_starts_a_progress_job() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::Request,
+        };
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let library = tempfile::tempdir().unwrap();
+        tokio::fs::write(library.path().join("Example - 01.mkv"), b"video")
+            .await
+            .unwrap();
+        let mut settings = crate::config::Settings::default();
+        settings.library.paths = vec![library.path().to_string_lossy().into_owned()];
+        settings.ffmpeg.ffprobe_path = "missing-ffprobe-for-scan-job-test".into();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let app = super::router(Arc::new(crate::state::AppState::new(
+            pool,
+            settings,
+            Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        )));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/scan")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(payload["job_id"].as_str().is_some());
+        let status = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/library/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn optional_auth_redirects_and_login_sets_session_cookie() {
         use axum::{body::Body, http::Request};
         use sqlx::sqlite::SqlitePoolOptions;
@@ -1433,7 +1639,9 @@ mod tests {
 
         let library = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let inside_file = library.path().join("episode.mkv");
+        let unicode_folder = library.path().join("Anime 日本語 & Space");
+        std::fs::create_dir_all(&unicode_folder).unwrap();
+        let inside_file = unicode_folder.join("第01話.mkv");
         let outside_file = outside.path().join("private.txt");
         std::fs::write(&inside_file, b"video").unwrap();
         std::fs::write(&outside_file, b"secret").unwrap();
@@ -1447,6 +1655,8 @@ mod tests {
         );
         assert!(super::validate_library_path(&state, &inside_file.to_string_lossy()).is_ok());
         assert!(super::validate_library_path(&state, &outside_file.to_string_lossy()).is_err());
+        #[cfg(windows)]
+        assert!(inside_file.to_string_lossy().contains(":\\"));
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@
   const byId = (id) => document.getElementById(id);
   const status = byId("settings-status");
   const scanStatus = byId("scan-status");
+  const scanProgress = byId("scan-progress");
   const setStatus = (message, error = false) => {
     if (status) {
       status.textContent = message;
@@ -90,9 +91,8 @@
     }
     const result = await response.json();
     await loadSettings();
-    const message = "Folder siap. " + result.scanned + " file video ditemukan.";
-    if (scanStatus) scanStatus.textContent = message;
-    setStatus(message);
+    if (scanStatus) scanStatus.textContent = "Folder ditambahkan. Memulai pemindaian…";
+    if (result.job_id) await refreshScanStatus();
   }
 
   async function choose(options) {
@@ -117,9 +117,43 @@
     if (scanStatus) scanStatus.textContent = "Memindai ulang library…";
     const response = await fetch("/api/library/scan", { method: "POST" });
     if (!response.ok) return setStatus(await response.text(), true);
-    const result = await response.json();
-    if (scanStatus) scanStatus.textContent = result.scanned + " file video dipindai.";
+    if (!response.ok) return setStatus(await response.text(), true);
+    await refreshScanStatus();
   });
+
+  async function refreshScanStatus() {
+    const response = await fetch("/api/library/status");
+    if (!response.ok) return;
+    const state = await response.json();
+    renderScan(state);
+  }
+
+  function renderScan(state) {
+    if (!scanStatus) return;
+    const running = state.running === true || state.state === "running";
+    if (running) {
+      const total = Number(state.total || 0);
+      const done = Number(state.done || 0);
+      scanStatus.textContent = total
+        ? `Memindai ${done} dari ${total} file… ${state.current || ""}`
+        : "Menghitung file di folder library…";
+      if (scanProgress) {
+        scanProgress.hidden = false;
+        scanProgress.value = total ? Math.min(100, done / total * 100) : 0;
+      }
+    } else {
+      scanStatus.textContent = state.message || state.current || state.last_result || "Tidak ada pemindaian aktif.";
+      if (scanProgress) scanProgress.hidden = true;
+    }
+  }
+
+  if (scanStatus && window.EventSource) {
+    const events = new EventSource("/api/library/events");
+    events.onmessage = (message) => {
+      try { renderScan(JSON.parse(message.data)); } catch (_) { /* ignore malformed local event */ }
+    };
+    refreshScanStatus().catch(() => {});
+  }
 
   document.querySelectorAll("[data-pick]").forEach((button) => button.addEventListener("click", async () => {
     const key = button.dataset.pick;

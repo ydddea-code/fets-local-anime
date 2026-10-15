@@ -10,6 +10,7 @@ use tokio::process::Child;
 use tokio::sync::RwLock as AsyncRwLock;
 
 pub struct ScanJob {
+    pub id: String,
     pub total: std::sync::atomic::AtomicU64,
     pub done: std::sync::atomic::AtomicU64,
     pub current: Mutex<String>,

@@ -29,9 +29,14 @@ pub fn data_dir() -> PathBuf {
 /// Strip the extended-length `\\?\` prefix that canonicalize() adds on
 /// Windows so paths look natural in the UI and mpv command lines.
 pub fn display_path(path: &std::path::Path) -> String {
-    path.to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .trim_start_matches(r"\\.\")
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    value
+        .strip_prefix(r"\\?\")
+        .or_else(|| value.strip_prefix(r"\\.\"))
+        .unwrap_or(&value)
         .to_string()
 }
 
@@ -87,6 +92,10 @@ mod tests {
         assert_eq!(
             display_path(std::path::Path::new(r"\\?\C:\Anime\Frieren - 01.mkv")),
             r"C:\Anime\Frieren - 01.mkv"
+        );
+        assert_eq!(
+            display_path(std::path::Path::new(r"\\?\UNC\NAS\Anime 日本語")),
+            r"\\NAS\Anime 日本語"
         );
         assert_eq!(
             display_path(std::path::Path::new("/home/user/anime.mkv")),

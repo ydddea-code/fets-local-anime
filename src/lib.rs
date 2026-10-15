@@ -46,7 +46,7 @@ pub async fn start_embedded_server(data_dir: PathBuf) -> anyhow::Result<Embedded
     if state.settings_snapshot().library.watch {
         tokio::spawn(services::watcher::watch_libraries(Arc::clone(&state)));
     }
-    routes::scan_startup(&state).await.ok();
+    let _ = routes::start_scan(Arc::clone(&state));
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
