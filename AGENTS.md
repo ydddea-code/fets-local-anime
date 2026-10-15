@@ -4,6 +4,9 @@
 > Tauri 2/WebView2 menyediakan jendela; axum dan backend Rust berjalan embedded
 > di proses yang sama pada loopback port acak. Jangan jadikan browser/server LAN
 > sebagai alur pemakaian utama.
+> Konfigurasi desktop diubah lewat UI dan langsung disimpan ke `settings.toml`
+> di direktori data aplikasi. Gunakan pemilih folder Tauri atau event drag/drop
+> File Explorer untuk memasukkan folder library.
 >
 > Dokumen ini adalah spesifikasi lengkap sekaligus panduan kerja untuk Codex.
 > Simpan sebagai `AGENTS.md` di root repo agar Codex membacanya otomatis di setiap sesi.

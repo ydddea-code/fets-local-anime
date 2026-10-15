@@ -19,7 +19,9 @@ cargo tauri build
 
 Data aplikasi desktop disimpan di `%APPDATA%\FetsAnime` melalui direktori data Tauri. Pengaturan dibuat otomatis saat pertama kali dijalankan. `config.toml` tidak diperlukan.
 
-> Saat ini Tauri menjadi shell Windows utama. Installer NSIS, bootstrapper WebView2, sidecar media, pemilih folder native, dan integrasi menu Explorer masih dalam tahap implementasi.
+Di halaman **Pengaturan**, tombol **Tambah Folder** membuka pemilih folder native Windows. Folder disimpan sebagai library dan dipindai; folder yang diseret dari File Explorer juga dapat ditambahkan. Pengaturan pemutar, tema, watcher, dan jalur program tersimpan otomatis.
+
+> Tauri menjadi shell Windows utama. Installer NSIS, bootstrapper WebView2, sidecar media, dan integrasi menu Explorer masih dalam tahap implementasi.
 
 ## Menjalankan backend untuk pengembangan
 

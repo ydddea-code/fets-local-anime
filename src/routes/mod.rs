@@ -53,6 +53,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/anime/:id/episodes", post(add_episode))
         .route("/api/library/scan", post(scan_library))
+        .route("/api/library/add-folder", post(add_library_folder))
+        .route("/api/library/remove-folder", post(remove_library_folder))
+        .route("/api/settings", get(get_settings).post(save_settings))
         .route("/api/progress/:id", get(get_progress).post(save_progress))
         .nest_service("/static", tower_http::services::ServeDir::new(static_dir()))
         .with_state(state)
@@ -86,7 +89,7 @@ async fn require_auth(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    if !state.settings.auth.enabled
+    if !state.settings_snapshot().auth.enabled
         || path == "/health"
         || path == "/login"
         || path == "/api/auth/login"
@@ -136,11 +139,11 @@ async fn login(
     State(state): State<Arc<AppState>>,
     Json(input): Json<LoginInput>,
 ) -> Result<Response, AppError> {
-    if !state.settings.auth.enabled
-        || input.password.len() != state.settings.auth.password.len()
+    if !state.settings_snapshot().auth.enabled
+        || input.password.len() != state.settings_snapshot().auth.password.len()
         || !constant_time_eq(
             input.password.as_bytes(),
-            state.settings.auth.password.as_bytes(),
+            state.settings_snapshot().auth.password.as_bytes(),
         )
     {
         return Err(AppError::BadRequest("invalid credentials".into()));
@@ -228,7 +231,12 @@ async fn home(State(state): State<Arc<AppState>>) -> Result<Html<String>, AppErr
     } else {
         String::new()
     };
-    Ok(page("Library", &format!("<h1>Library anime</h1>{resume_html}<section class=\"grid\">{cards}</section><p><a href=\"/add\">Tambah anime</a> · <a href=\"/settings\">Scan folder library</a></p>")))
+    let empty = if cards.is_empty() {
+        "<section class=\"empty-state\"><h2>Belum ada anime</h2><p>Tambahkan folder berisi koleksi anime milikmu.</p><button id=\"add-folder\" type=\"button\">Tambah folder anime</button></section>"
+    } else {
+        ""
+    };
+    Ok(page("Library", &format!("<h1>Perpustakaan</h1>{resume_html}{empty}<section class=\"grid\">{cards}</section><p><a href=\"/add\">Tambah anime manual</a> · <a href=\"/settings\">Pengaturan</a></p><script src=\"/static/settings.js\" defer></script>")))
 }
 
 async fn anime_page(
@@ -280,7 +288,7 @@ async fn anime_page(
     let synopsis = synopsis
         .map(|text| format!("<p>{}</p>", escape(&text)))
         .unwrap_or_default();
-    let metadata_ui = if state.settings.metadata.anilist_enabled {
+    let metadata_ui = if state.settings_snapshot().metadata.anilist_enabled {
         format!("<section><label><input id=\"metadata-lock\" type=\"checkbox\" {}> Kunci metadata hasil edit manual</label><button id=\"refresh-metadata\">Perbarui dari AniList</button><p id=\"metadata-message\"></p></section><script>const lock=document.querySelector('#metadata-lock');lock.addEventListener('change',async()=>{{const r=await fetch('/api/anime/{id}/metadata-lock',{{method:'PATCH',headers:{{'content-type':'application/json'}},body:JSON.stringify({{locked:lock.checked}})}});if(!r.ok)document.querySelector('#metadata-message').textContent=await r.text();}});document.querySelector('#refresh-metadata').addEventListener('click',async()=>{{const r=await fetch('/api/anime/{id}/refresh-metadata',{{method:'POST'}});document.querySelector('#metadata-message').textContent=r.ok?'Metadata diperbarui':await r.text();if(r.ok)location.reload();}});</script>", if metadata_locked {"checked"} else {""})
     } else {
         String::new()
@@ -298,7 +306,7 @@ async fn refresh_metadata(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if !state.settings.metadata.anilist_enabled {
+    if !state.settings_snapshot().metadata.anilist_enabled {
         return Err(AppError::Unavailable("AniList metadata is disabled".into()));
     }
     let row = sqlx::query("SELECT title,metadata_locked FROM anime WHERE id=?")
@@ -319,7 +327,7 @@ async fn refresh_metadata(
             &state.pool,
             &title,
             state
-                .settings
+                .settings_snapshot()
                 .metadata
                 .cache_ttl_hours
                 .try_into()
@@ -430,34 +438,157 @@ async fn watch_page(
 }
 
 async fn settings_page(State(state): State<Arc<AppState>>) -> Html<String> {
-    let paths = state
-        .settings
-        .library
-        .paths
-        .iter()
-        .map(|p| format!("<li>{}</li>", escape(p)))
-        .collect::<String>();
-    let auth_status = if state.settings.auth.enabled {
-        "Aktif"
-    } else {
-        "Nonaktif"
-    };
-    let watcher_status = if state.settings.library.watch {
-        "Aktif"
-    } else {
-        "Nonaktif"
-    };
-    let metadata_status = if state.settings.metadata.anilist_enabled {
-        "Aktif"
-    } else {
-        "Nonaktif"
-    };
-    let logout = if state.settings.auth.enabled {
-        "<form id=\"logout\"><button>Keluar</button></form><script>document.querySelector('#logout').addEventListener('submit',async e=>{e.preventDefault();await fetch('/api/auth/logout',{method:'POST'});location.href='/login';});</script>"
-    } else {
-        ""
-    };
-    page("Pengaturan", &format!("<h1>Pengaturan</h1><h2>Library paths</h2><ul>{paths}</ul><form method=post action=\"/api/library/scan\"><button>Scan sekarang</button></form><h2>Status layanan</h2><dl><dt>Autentikasi</dt><dd>{auth_status}</dd><dt>Pemantau folder</dt><dd>{watcher_status}</dd><dt>Metadata AniList</dt><dd>{metadata_status}</dd></dl>{logout}<p>Ubah pengaturan server melalui config.toml atau environment variable, lalu mulai ulang server.</p>"))
+    let _ = state;
+    page(
+        "Pengaturan",
+        r#"<h1>Pengaturan</h1>
+      <section class="card"><h2>Folder anime</h2><p class="muted">Setiap subfolder menjadi satu anime.</p>
+      <div class="button-row"><button id="add-folder" type="button">Tambah Folder</button><button id="scan-library" class="secondary" type="button">Pindai ulang</button></div>
+      <ul id="library-folders" class="folder-list"></ul><div id="scan-status" role="status" aria-live="polite"></div></section>
+      <section class="card"><h2>Pemutar</h2><label>Pemutar default<select id="player"><option value="auto">Otomatis (HTML5 lalu mpv)</option><option value="html5">HTML5 saja</option><option value="mpv">mpv selalu</option></select></label>
+      <label>mpv.exe <div class="input-row"><input id="mpv-path"><button class="secondary" type="button" data-pick="mpv_path">Pilih mpv.exe</button></div></label>
+      <label>ffmpeg.exe <div class="input-row"><input id="ffmpeg-path"><button class="secondary" type="button" data-pick="ffmpeg_path">Pilih ffmpeg.exe</button></div></label>
+      <label>ffprobe.exe <div class="input-row"><input id="ffprobe-path"><button class="secondary" type="button" data-pick="ffprobe_path">Pilih ffprobe.exe</button></div></label></section>
+      <section class="card"><h2>Preferensi</h2><label>Tema<select id="theme"><option value="dark">Gelap</option><option value="light">Terang</option><option value="system">Ikuti Windows</option></select></label>
+      <label class="check-row"><input id="watch" type="checkbox"> Pindai otomatis saat folder berubah</label><label class="check-row"><input id="anilist" type="checkbox"> Ambil metadata dari AniList</label>
+      <p id="settings-status" role="status" aria-live="polite"></p></section><script src="/static/settings.js" defer></script>"#,
+    )
+}
+
+#[derive(Deserialize)]
+struct LibraryFolderInput {
+    path: String,
+}
+
+async fn add_library_folder(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<LibraryFolderInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let folder = FsPath::new(input.path.trim()).canonicalize().map_err(|_| {
+        AppError::BadRequest("folder tidak ditemukan atau tidak dapat diakses".into())
+    })?;
+    if !folder.is_dir() {
+        return Err(AppError::BadRequest("pilih sebuah folder".into()));
+    }
+    let path = crate::desktop::display_path(&folder);
+    {
+        let mut settings = state.settings.write().expect("settings lock");
+        if !settings
+            .library
+            .paths
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(&path))
+        {
+            settings.library.paths.push(path.clone());
+            settings.save()?;
+        }
+    }
+    let scanned = scan_folders(&state).await?;
+    Ok(Json(serde_json::json!({"path": path, "scanned": scanned})))
+}
+
+async fn remove_library_folder(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<LibraryFolderInput>,
+) -> Result<StatusCode, AppError> {
+    let target = FsPath::new(input.path.trim())
+        .canonicalize()
+        .map_err(|_| AppError::BadRequest("folder tidak ditemukan".into()))?;
+    {
+        let mut settings = state.settings.write().expect("settings lock");
+        settings
+            .library
+            .paths
+            .retain(|path| !FsPath::new(path).starts_with(&target));
+        settings.save()?;
+    }
+    let rows = sqlx::query("SELECT id,file_path FROM episode")
+        .fetch_all(&state.pool)
+        .await?;
+    for row in rows {
+        let path: String = row.try_get("file_path")?;
+        if FsPath::new(&path).starts_with(&target) {
+            let id: i64 = row.try_get("id")?;
+            sqlx::query("DELETE FROM episode WHERE id=?")
+                .bind(id)
+                .execute(&state.pool)
+                .await?;
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+struct SettingsResponse {
+    player: String,
+    mpv_path: String,
+    ffmpeg_path: String,
+    ffprobe_path: String,
+    theme: String,
+    watch: bool,
+    anilist_enabled: bool,
+    library_paths: Vec<String>,
+}
+
+async fn get_settings(State(state): State<Arc<AppState>>) -> Json<SettingsResponse> {
+    let settings = state.settings_snapshot();
+    Json(SettingsResponse {
+        player: settings.desktop.player,
+        mpv_path: settings.desktop.mpv_path,
+        ffmpeg_path: settings.ffmpeg.ffmpeg_path,
+        ffprobe_path: settings.ffmpeg.ffprobe_path,
+        theme: settings.desktop.theme,
+        watch: settings.library.watch,
+        anilist_enabled: settings.metadata.anilist_enabled,
+        library_paths: settings.library.paths,
+    })
+}
+
+#[derive(Deserialize)]
+struct SettingsUpdate {
+    player: Option<String>,
+    mpv_path: Option<String>,
+    ffmpeg_path: Option<String>,
+    ffprobe_path: Option<String>,
+    theme: Option<String>,
+    watch: Option<bool>,
+    anilist_enabled: Option<bool>,
+}
+
+async fn save_settings(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<SettingsUpdate>,
+) -> Result<StatusCode, AppError> {
+    let mut settings = state.settings.write().expect("settings lock");
+    if let Some(player) = update.player {
+        if !matches!(player.as_str(), "auto" | "html5" | "mpv") {
+            return Err(AppError::BadRequest("pilihan pemutar tidak valid".into()));
+        }
+        settings.desktop.player = player;
+    }
+    if let Some(theme) = update.theme {
+        if !matches!(theme.as_str(), "dark" | "light" | "system") {
+            return Err(AppError::BadRequest("pilihan tema tidak valid".into()));
+        }
+        settings.desktop.theme = theme;
+    }
+    if let Some(value) = update.mpv_path {
+        settings.desktop.mpv_path = value;
+    }
+    if let Some(value) = update.ffmpeg_path {
+        settings.ffmpeg.ffmpeg_path = value;
+    }
+    if let Some(value) = update.ffprobe_path {
+        settings.ffmpeg.ffprobe_path = value;
+    }
+    if let Some(value) = update.watch {
+        settings.library.watch = value;
+    }
+    if let Some(value) = update.anilist_enabled {
+        settings.metadata.anilist_enabled = value;
+    }
+    settings.save()?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn add_page() -> Html<String> {
@@ -532,7 +663,7 @@ async fn add_episode(
         .unwrap_or("")
         .to_ascii_lowercase();
     if !state
-        .settings
+        .settings_snapshot()
         .library
         .extensions
         .iter()
@@ -564,15 +695,15 @@ async fn add_episode(
     .bind(meta.len() as i64)
     .fetch_one(&state.pool)
     .await?;
-    match probe(&state.settings.ffmpeg.ffprobe_path, &path).await {
+    match probe(&state.settings_snapshot().ffmpeg.ffprobe_path, &path).await {
         Ok(info) => {
             sqlx::query("UPDATE episode SET duration_sec=?,video_codec=?,audio_codec=?,container=?,streams_json=? WHERE id=?")
                 .bind(info.duration_sec).bind(info.video_codec).bind(info.audio_codec).bind(info.container).bind(info.streams_json).bind(episode_id).execute(&state.pool).await?;
             extract_embedded_subtitles(&state, episode_id, &path).await;
-            let thumb = PathBuf::from(&state.settings.data.dir)
+            let thumb = PathBuf::from(&state.settings_snapshot().data.dir)
                 .join("thumbs")
                 .join(format!("{episode_id}.jpg"));
-            if generate_thumbnail(&state.settings.ffmpeg.ffmpeg_path, &path, &thumb)
+            if generate_thumbnail(&state.settings_snapshot().ffmpeg.ffmpeg_path, &path, &thumb)
                 .await
                 .is_ok()
             {
@@ -596,7 +727,7 @@ fn validate_library_path(state: &AppState, input: &str) -> Result<PathBuf, AppEr
         .canonicalize()
         .map_err(|_| AppError::BadRequest("file path does not exist".into()))?;
     let allowed = state
-        .settings
+        .settings_snapshot()
         .library
         .paths
         .iter()
@@ -623,7 +754,7 @@ pub async fn scan_startup(state: &AppState) -> Result<(), AppError> {
 
 async fn scan_folders(state: &AppState) -> Result<usize, AppError> {
     let mut found = 0usize;
-    for configured_root in &state.settings.library.paths {
+    for configured_root in &state.settings_snapshot().library.paths {
         let root = match FsPath::new(configured_root).canonicalize() {
             Ok(p) => p,
             Err(_) => continue,
@@ -644,7 +775,7 @@ async fn scan_folders(state: &AppState) -> Result<usize, AppError> {
         for (file_index, file) in files.into_iter().enumerate() {
             let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !state
-                .settings
+                .settings_snapshot()
                 .library
                 .extensions
                 .iter()
@@ -681,7 +812,7 @@ async fn scan_folders(state: &AppState) -> Result<usize, AppError> {
                 .unwrap_or_default();
             let episode_id: i64 = sqlx::query_scalar("INSERT INTO episode(anime_id,season,number,title,file_path,file_size,file_mtime) VALUES(?,?,?,?,?,?,?) ON CONFLICT(file_path) DO UPDATE SET anime_id=excluded.anime_id,season=excluded.season,number=excluded.number,title=excluded.title,file_size=excluded.file_size,file_mtime=excluded.file_mtime RETURNING id")
                 .bind(anime_id).bind(parsed.season as i64).bind(parsed.number).bind(Option::<String>::None).bind(file.to_string_lossy().to_string()).bind(metadata.len() as i64).bind(modified).fetch_one(&state.pool).await?;
-            if let Ok(info) = probe(&state.settings.ffmpeg.ffprobe_path, &file).await {
+            if let Ok(info) = probe(&state.settings_snapshot().ffmpeg.ffprobe_path, &file).await {
                 sqlx::query("UPDATE episode SET duration_sec=?,video_codec=?,audio_codec=?,container=?,streams_json=? WHERE id=?")
                     .bind(info.duration_sec).bind(info.video_codec).bind(info.audio_codec).bind(info.container).bind(info.streams_json).bind(episode_id).execute(&state.pool).await?;
                 sqlx::query("DELETE FROM subtitle WHERE episode_id=?")
@@ -690,10 +821,10 @@ async fn scan_folders(state: &AppState) -> Result<usize, AppError> {
                     .await?;
                 sync_external_subtitles(&state.pool, episode_id, &file).await?;
                 extract_embedded_subtitles(state, episode_id, &file).await;
-                let thumb = PathBuf::from(&state.settings.data.dir)
+                let thumb = PathBuf::from(&state.settings_snapshot().data.dir)
                     .join("thumbs")
                     .join(format!("{episode_id}.jpg"));
-                if generate_thumbnail(&state.settings.ffmpeg.ffmpeg_path, &file, &thumb)
+                if generate_thumbnail(&state.settings_snapshot().ffmpeg.ffmpeg_path, &file, &thumb)
                     .await
                     .is_ok()
                 {
@@ -808,7 +939,7 @@ async fn extract_embedded_subtitles(state: &AppState, episode_id: i64, video_pat
         let Some(stream_idx) = stream.get("index").and_then(serde_json::Value::as_i64) else {
             continue;
         };
-        let output = PathBuf::from(&state.settings.data.dir)
+        let output = PathBuf::from(&state.settings_snapshot().data.dir)
             .join("subtitles")
             .join(format!("{episode_id}-{stream_idx}.vtt"));
         if let Some(parent) = output.parent() {
@@ -816,7 +947,7 @@ async fn extract_embedded_subtitles(state: &AppState, episode_id: i64, video_pat
                 continue;
             }
         }
-        let result = tokio::process::Command::new(&state.settings.ffmpeg.ffmpeg_path)
+        let result = tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path)
             .args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(video_path)
             .arg("-map")
@@ -889,23 +1020,24 @@ async fn subtitle_vtt(
         let episode_id: i64 = row.try_get("episode_id")?;
         let media_path: String = row.try_get("media_path")?;
         let media_path = validate_library_path(&state, &media_path)?;
-        let cached = PathBuf::from(&state.settings.data.dir)
+        let cached = PathBuf::from(&state.settings_snapshot().data.dir)
             .join("subtitles")
             .join(format!("{episode_id}-{stream_idx}.vtt"));
         if !cached.is_file() {
             tokio::fs::create_dir_all(cached.parent().ok_or(AppError::NotFound)?).await?;
-            let result = tokio::process::Command::new(&state.settings.ffmpeg.ffmpeg_path)
-                .args(["-hide_banner", "-loglevel", "error", "-i"])
-                .arg(media_path)
-                .arg("-map")
-                .arg(format!("0:{stream_idx}"))
-                .args(["-f", "webvtt", "-y"])
-                .arg(&cached)
-                .output()
-                .await
-                .map_err(|e| {
-                    AppError::BadRequest(format!("ffmpeg could not extract subtitle: {e}"))
-                })?;
+            let result =
+                tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path)
+                    .args(["-hide_banner", "-loglevel", "error", "-i"])
+                    .arg(media_path)
+                    .arg("-map")
+                    .arg(format!("0:{stream_idx}"))
+                    .args(["-f", "webvtt", "-y"])
+                    .arg(&cached)
+                    .output()
+                    .await
+                    .map_err(|e| {
+                        AppError::BadRequest(format!("ffmpeg could not extract subtitle: {e}"))
+                    })?;
             if !result.status.success() {
                 return Err(AppError::BadRequest(
                     String::from_utf8_lossy(&result.stderr).trim().to_owned(),
@@ -934,7 +1066,7 @@ async fn episode_thumbnail(
         .ok_or(AppError::NotFound)?;
     let value = value.ok_or(AppError::NotFound)?;
     let path = FsPath::new(&value).canonicalize()?;
-    let thumb_root = FsPath::new(&state.settings.data.dir)
+    let thumb_root = FsPath::new(&state.settings_snapshot().data.dir)
         .join("thumbs")
         .canonicalize()?;
     if !path.starts_with(thumb_root) {
@@ -1026,7 +1158,7 @@ async fn stream_episode(
     let path = validate_library_path(&state, &value)?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if !state
-        .settings
+        .settings_snapshot()
         .library
         .extensions
         .iter()
@@ -1093,7 +1225,7 @@ async fn media_path_for_hls(state: &AppState, episode_id: i64) -> Result<PathBuf
     let path = validate_library_path(state, &value)?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if !state
-        .settings
+        .settings_snapshot()
         .library
         .extensions
         .iter()
@@ -1111,7 +1243,7 @@ async fn hls_playlist(
     Path(episode_id): Path<i64>,
 ) -> Result<Response, AppError> {
     let media_path = media_path_for_hls(&state, episode_id).await?;
-    let ffmpeg_path = state.settings.ffmpeg.ffmpeg_path.clone();
+    let ffmpeg_path = state.settings_snapshot().ffmpeg.ffmpeg_path.clone();
     let directory = state
         .hls
         .ensure_session(episode_id, &media_path, &ffmpeg_path)
@@ -1137,7 +1269,7 @@ async fn hls_segment(
         return Err(AppError::NotFound);
     }
     let media_path = media_path_for_hls(&state, episode_id).await?;
-    let ffmpeg_path = state.settings.ffmpeg.ffmpeg_path.clone();
+    let ffmpeg_path = state.settings_snapshot().ffmpeg.ffmpeg_path.clone();
     let directory = state
         .hls
         .ensure_session(episode_id, &media_path, &ffmpeg_path)
@@ -1189,13 +1321,12 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        let app = super::router(Arc::new(crate::state::AppState {
+        let app = super::router(Arc::new(crate::state::AppState::new(
             pool,
-            settings: crate::config::Settings::default(),
-            hls: Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
-            metadata: crate::services::metadata::MetadataClient::new().unwrap(),
-            sessions: Arc::default(),
-        }));
+            crate::config::Settings::default(),
+            Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        )));
         let response = app
             .oneshot(
                 Request::builder()
@@ -1206,6 +1337,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn settings_api_persists_desktop_preferences() {
+        use axum::{body::Body, http::Request};
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = crate::config::Settings::default();
+        settings.data.dir = dir.path().to_string_lossy().into_owned();
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let app = super::router(Arc::new(crate::state::AppState::new(
+            pool,
+            settings,
+            Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        )));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"theme":"light","player":"mpv","watch":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let saved = std::fs::read_to_string(dir.path().join("settings.toml")).unwrap();
+        let persisted: crate::config::Settings = toml::from_str(&saved).unwrap();
+        assert_eq!(persisted.desktop.theme, "light");
+        assert_eq!(persisted.desktop.player, "mpv");
+        assert!(!persisted.library.watch);
     }
 
     #[tokio::test]
@@ -1224,13 +1397,12 @@ mod tests {
         let mut settings = crate::config::Settings::default();
         settings.auth.enabled = true;
         settings.auth.password = "secret-test-password".into();
-        let app = super::router(Arc::new(crate::state::AppState {
+        let app = super::router(Arc::new(crate::state::AppState::new(
             pool,
             settings,
-            hls: Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
-            metadata: crate::services::metadata::MetadataClient::new().unwrap(),
-            sessions: Arc::default(),
-        }));
+            Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        )));
 
         let response = app
             .clone()
@@ -1267,13 +1439,12 @@ mod tests {
         std::fs::write(&outside_file, b"secret").unwrap();
         let mut settings = crate::config::Settings::default();
         settings.library.paths = vec![library.path().to_string_lossy().to_string()];
-        let state = crate::state::AppState {
-            pool: sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap(),
+        let state = crate::state::AppState::new(
+            sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap(),
             settings,
-            hls: std::sync::Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
-            metadata: crate::services::metadata::MetadataClient::new().unwrap(),
-            sessions: std::sync::Arc::default(),
-        };
+            std::sync::Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        );
         assert!(super::validate_library_path(&state, &inside_file.to_string_lossy()).is_ok());
         assert!(super::validate_library_path(&state, &outside_file.to_string_lossy()).is_err());
     }
@@ -1299,13 +1470,12 @@ mod tests {
         settings.library.paths = vec![library.path().to_string_lossy().to_string()];
         settings.ffmpeg.ffprobe_path = "missing-ffprobe-for-test".into();
         settings.data.dir = data.path().to_string_lossy().to_string();
-        let state = crate::state::AppState {
+        let state = crate::state::AppState::new(
             pool,
             settings,
-            hls: std::sync::Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
-            metadata: crate::services::metadata::MetadataClient::new().unwrap(),
-            sessions: std::sync::Arc::default(),
-        };
+            std::sync::Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        );
 
         assert_eq!(super::scan_folders(&state).await.unwrap(), 1);
         let title: String = sqlx::query_scalar("SELECT title FROM anime")
@@ -1361,13 +1531,12 @@ mod tests {
             .unwrap();
         let mut settings = crate::config::Settings::default();
         settings.library.paths = vec![folder.path().to_string_lossy().to_string()];
-        let app = super::router(Arc::new(crate::state::AppState {
+        let app = super::router(Arc::new(crate::state::AppState::new(
             pool,
             settings,
-            hls: Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
-            metadata: crate::services::metadata::MetadataClient::new().unwrap(),
-            sessions: Arc::default(),
-        }));
+            Arc::new(crate::services::hls::HlsManager::new(PathBuf::new(), 1, 6)),
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        )));
 
         let response = app
             .clone()
@@ -1433,13 +1602,12 @@ mod tests {
             1,
             6,
         ));
-        let app = super::router(Arc::new(crate::state::AppState {
+        let app = super::router(Arc::new(crate::state::AppState::new(
             pool,
             settings,
             hls,
-            metadata: crate::services::metadata::MetadataClient::new().unwrap(),
-            sessions: Arc::default(),
-        }));
+            crate::services::metadata::MetadataClient::new().unwrap(),
+        )));
         let response = app
             .oneshot(
                 Request::builder()

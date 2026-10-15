@@ -43,7 +43,7 @@ pub async fn start_embedded_server(data_dir: PathBuf) -> anyhow::Result<Embedded
     let state = Arc::new(state::AppState::new(pool, settings, hls, metadata));
     let app = routes::router(Arc::clone(&state));
 
-    if state.settings.library.watch {
+    if state.settings_snapshot().library.watch {
         tokio::spawn(services::watcher::watch_libraries(Arc::clone(&state)));
     }
     routes::scan_startup(&state).await.ok();

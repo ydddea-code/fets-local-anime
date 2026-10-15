@@ -70,6 +70,20 @@ main.content { flex: 1; min-width: 0; padding: 1.5rem 2rem 3rem; }
 h1 { font-size: 1.45rem; font-weight: 600; margin: 0 0 1rem; }
 h2 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 .75rem; color: var(--text); }
 .muted { color: var(--muted); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.2rem; margin: 1rem 0; max-width: 56rem; }
+.empty-state { min-height: 44vh; display: grid; align-content: center; justify-items: center; text-align: center; color: var(--muted); }
+.empty-state h2 { color: var(--text); }
+.button-row, .input-row { display: flex; align-items: center; gap: .6rem; }
+.input-row input { flex: 1; min-width: 0; }
+.folder-list { padding: 0; list-style: none; }
+.folder-list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid var(--border); }
+.folder-list li span { overflow-wrap: anywhere; }
+.check-row { display: flex; align-items: center; gap: .6rem; }
+.check-row input { width: auto; }
+#scan-status, #settings-status { min-height: 1.5rem; color: var(--muted); }
+.error { color: var(--danger) !important; }
+button.secondary, .icon-button { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+@media (max-width: 680px) { .input-row { align-items: stretch; flex-direction: column; } }
 
 button, .btn {
   font: inherit; cursor: pointer;
