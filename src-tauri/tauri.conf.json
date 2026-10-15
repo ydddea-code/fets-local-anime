@@ -15,14 +15,25 @@
     "windows": []
   },
   "bundle": {
-    "active": false,
-    "targets": [],
+    "active": true,
+    "targets": ["nsis"],
     "category": "Video",
+    "icon": ["icons/icon.ico"],
     "resources": {
       "../static/": "static/",
       "binaries/": "bin/"
     },
     "shortDescription": "Pemutar anime lokal",
-    "longDescription": "Aplikasi desktop Windows untuk mengelola dan menonton anime dari file milik pengguna."
+    "longDescription": "Aplikasi desktop Windows untuk mengelola dan menonton anime dari file milik pengguna.",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Fets Anime",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "nsis/hooks.nsh"
+      },
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
   }
 }

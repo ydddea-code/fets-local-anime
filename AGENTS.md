@@ -12,6 +12,12 @@
 > Simpan sebagai `AGENTS.md` di root repo agar Codex membacanya otomatis di setiap sesi.
 > Bahasa dokumen: Indonesia. Identifier kode, nama komit, dan komentar kode: Inggris.
 
+## Status implementasi desktop (2026-10)
+
+Catatan ini memperbarui bagian milestone lama di bawah: implementasi utama desktop sekarang sudah tersedia. Fokus target adalah Windows 10/11 x64; jangan menambah target macOS/Linux atau Docker ke CI/build default. Shell ada di `src-tauri`, backend embedded tetap di crate root, UI lokal di `static`, dan semua data runtime desktop di `%APPDATA%\FetsAnime`. Gunakan `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`, dan `cargo test --locked` untuk backend; validasi shell tambahan dengan `cargo fmt --manifest-path src-tauri/Cargo.toml --all` dan `cargo check --manifest-path src-tauri/Cargo.toml`.
+
+Installer NSIS per-user dan CI Windows menghasilkan artifact installer. Sebelum packaging, `scripts/fetch-sidecars.ps1` mengambil build Windows x64 FFmpeg GPL shared dan mpv serta notice lisensinya. Jangan commit binary sidecar; `src-tauri/binaries` diisi saat build dan diabaikan Git. Setiap distribusi harus menyimpan versi binary dan memenuhi syarat GPL, termasuk menyediakan source yang sesuai. Jika mengubah installer atau pengaturan lokasi sidecar, sinkronkan README dan lisensi.
+
 ---
 
 ## 1. Ringkasan

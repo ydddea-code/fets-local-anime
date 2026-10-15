@@ -21,7 +21,7 @@ Data aplikasi desktop disimpan di `%APPDATA%\FetsAnime` melalui direktori data T
 
 Di halaman **Pengaturan**, tombol **Tambah Folder** membuka pemilih folder native Windows. Folder disimpan sebagai library dan langsung dipindai; folder yang diseret dari File Explorer juga dapat ditambahkan. Progres scan dikirim ke jendela aplikasi melalui SSE. Pengaturan pemutar, tema, watcher, dan jalur program tersimpan otomatis.
 
-> Tauri menjadi shell Windows utama. Installer NSIS, bootstrapper WebView2, sidecar media, dan integrasi menu Explorer masih dalam tahap implementasi.
+Installer NSIS tersedia untuk pemasangan per pengguna tanpa hak administrator. Installer membuat shortcut Start Menu, memakai WebView2 bootstrapper jika runtime belum tersedia, dan saat uninstall menawarkan penghapusan data `%APPDATA%\FetsAnime`.
 
 ### Sidecar media untuk paket Windows
 
@@ -31,7 +31,7 @@ Paket installer menyertakan FFmpeg (build GPL shared) dan mpv. Untuk menyiapkan 
 .\scripts\fetch-sidecars.ps1
 ```
 
-Skrip mengambil rilis Windows x64 terbaru dari proyek build yang ditautkan dalam `licenses/README.md`, menaruh executable dan DLL pendukung di `src-tauri/binaries`, serta menyalin notice lisensi dan versi ke `licenses/third-party`. Folder executable dibuat saat persiapan build dan tidak dimasukkan ke Git. Build rilis harus menyertakan sumber yang sesuai untuk versi binary tersebut; lihat `licenses/third-party/VERSIONS.txt` yang dihasilkan skrip.
+Skrip mengambil rilis Windows x64 terbaru dari proyek build yang ditautkan dalam `licenses/README.md`, menaruh executable dan DLL pendukung di `src-tauri/binaries`, serta menyalin notice lisensi dan versi ke `licenses/third-party`. Folder executable dibuat saat persiapan build dan tidak dimasukkan ke Git. Build rilis harus menyertakan sumber yang sesuai untuk versi binary tersebut; lihat `licenses/third-party/VERSIONS.txt` yang dihasilkan skrip. CI mengunduh sidecar dan mengunggah installer NSIS sebagai artifact.
 
 Di aplikasi, jalur FFmpeg dan mpv dapat diganti di Pengaturan. Sidecar dicari otomatis dari resource installer sebelum PATH dan lokasi instalasi umum.
 
@@ -124,12 +124,14 @@ Klien memakai ID database untuk streaming dan tidak dapat memilih path arbitrer.
 
 ## Status
 
-M0–M9 menyediakan fitur dasar, ffprobe, thumbnail, subtitle eksternal/embedded, HLS on-demand, AniList metadata manual, file watcher opsional, autentikasi password opsional, dan CI. `hls.js` 1.7.3 disertakan lokal agar pemutaran HLS tidak memerlukan internet. Metadata AniList mati secara default dan dapat diaktifkan melalui `[metadata]`; watcher juga mati secara default dan dapat diaktifkan melalui `[library]`. Pembaruan metadata mempertahankan nama anime yang dimasukkan pengguna dan metadata dapat dikunci dari halaman anime. CI hanya berjalan di runner `windows-latest`: fmt, clippy, test, dan build release Windows. Fitur lanjutan yang belum ada mencakup status job scan, Askama/HTMX, dan build installer.
+Desktop Windows memakai Tauri 2, embedded axum dengan port localhost acak, penyimpanan `%APPDATA%\FetsAnime`, pengaturan auto-save, native folder picker, drag/drop, scan progress/SSE, watcher, dan integrasi mpv IPC untuk sinkronisasi progres. `hls.js` 1.7.3 disertakan lokal. AniList metadata tetap opsional; thumbnail perpustakaan disimpan lokal. CI hanya berjalan di `windows-latest`: format Rust dan Tauri, clippy, tes, lalu membuat installer NSIS Windows x64 dan mengunggahnya sebagai artifact. Tidak ada fitur pengambilan video dari situs pihak ketiga.
 
 ## Pemeriksaan
 
 ```powershell
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --locked
+cargo fmt --manifest-path src-tauri/Cargo.toml --all
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
