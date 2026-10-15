@@ -1,7 +1,0 @@
-.git
-.cargo-home
-target
-data
-work
-outputs
-config.toml
