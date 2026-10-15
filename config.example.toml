@@ -1,0 +1,26 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[library]
+paths = []
+extensions = ["mkv", "mp4", "webm", "avi", "m4v"]
+scan_on_startup = false
+watch = false
+
+[data]
+dir = "./data"
+
+[ffmpeg]
+ffmpeg_path = "ffmpeg"
+ffprobe_path = "ffprobe"
+hls_segment_seconds = 6
+max_concurrent_transcodes = 2
+
+[metadata]
+anilist_enabled = false
+cache_ttl_hours = 24
+
+[auth]
+enabled = false
+password = ""
