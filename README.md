@@ -23,6 +23,18 @@ Di halaman **Pengaturan**, tombol **Tambah Folder** membuka pemilih folder nativ
 
 > Tauri menjadi shell Windows utama. Installer NSIS, bootstrapper WebView2, sidecar media, dan integrasi menu Explorer masih dalam tahap implementasi.
 
+### Sidecar media untuk paket Windows
+
+Paket installer menyertakan FFmpeg (build GPL shared) dan mpv. Untuk menyiapkan binary sebelum build rilis, pasang 7-Zip dan jalankan dari PowerShell:
+
+```powershell
+.\scripts\fetch-sidecars.ps1
+```
+
+Skrip mengambil rilis Windows x64 terbaru dari proyek build yang ditautkan dalam `licenses/README.md`, menaruh executable dan DLL pendukung di `src-tauri/binaries`, serta menyalin notice lisensi dan versi ke `licenses/third-party`. Folder executable dibuat saat persiapan build dan tidak dimasukkan ke Git. Build rilis harus menyertakan sumber yang sesuai untuk versi binary tersebut; lihat `licenses/third-party/VERSIONS.txt` yang dihasilkan skrip.
+
+Di aplikasi, jalur FFmpeg dan mpv dapat diganti di Pengaturan. Sidecar dicari otomatis dari resource installer sebelum PATH dan lokasi instalasi umum.
+
 ## Menjalankan backend untuk pengembangan
 
 Backend dapat dijalankan sendiri untuk pengembangan dengan `cargo run`. Mode ini bukan alur pemakaian aplikasi desktop.

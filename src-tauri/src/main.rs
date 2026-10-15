@@ -33,6 +33,10 @@ fn main() {
                     if static_dir.join("app.css").is_file() {
                         std::env::set_var("FETS_STATIC_DIR", static_dir);
                     }
+                    let bin_dir = resource_dir.join("bin");
+                    if bin_dir.join("ffmpeg.exe").is_file() {
+                        std::env::set_var("FETS_BIN_DIR", bin_dir);
+                    }
                 }
                 match anime_stream::start_embedded_server(data_dir).await {
                     Ok(server) => {

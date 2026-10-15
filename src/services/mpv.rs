@@ -44,6 +44,12 @@ pub fn find_tool(configured: &str, exe_name: &str) -> String {
 }
 
 fn sidecar_candidate(exe_name: &str) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("FETS_BIN_DIR") {
+        let candidate = PathBuf::from(dir).join(exe_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let candidate = dir.join(exe_name);

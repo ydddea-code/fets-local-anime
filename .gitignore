@@ -1,6 +1,10 @@
 /target
 /src-tauri/target
 /src-tauri/gen/schemas
+/src-tauri/binaries/*.exe
+/src-tauri/binaries/*.dll
+/licenses/third-party/*
+!/licenses/third-party/.gitkeep
 /.cargo-home
 /data/*
 !/data/.gitkeep

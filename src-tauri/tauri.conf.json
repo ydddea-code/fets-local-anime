@@ -19,7 +19,8 @@
     "targets": [],
     "category": "Video",
     "resources": {
-      "../static/": "static/"
+      "../static/": "static/",
+      "binaries/": "bin/"
     },
     "shortDescription": "Pemutar anime lokal",
     "longDescription": "Aplikasi desktop Windows untuk mengelola dan menonton anime dari file milik pengguna."
