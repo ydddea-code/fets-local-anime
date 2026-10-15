@@ -57,7 +57,7 @@
         if (errorBox) errorBox.textContent = detail;
         fellBack = false; // allow retry from the manual button
       } else {
-        if (errorBox) errorBox.textContent = "Sedang diputar di mpv. Progres tersimpan otomatis.";
+        if (errorBox) errorBox.textContent = "mpv tampil di dalam jendela Fets Anime. Tekan Q untuk kembali. Progres tersimpan otomatis.";
         window.__fetsMpvActive = true;
       }
     } catch (e) {

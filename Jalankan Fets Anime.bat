@@ -1,6 +1,7 @@
 @echo off
 setlocal
 for %%P in (
+  "%~dp0..\..\outputs\Fets Anime\setup.exe"
   "%LOCALAPPDATA%\Fets Anime\fets-anime-desktop.exe"
   "%LOCALAPPDATA%\Fets Anime\Fets Anime.exe"
   "%LOCALAPPDATA%\Programs\Fets Anime\fets-anime-desktop.exe"
@@ -14,5 +15,5 @@ for %%P in (
   )
 )
 echo Fets Anime belum terpasang di komputer ini.
-echo Buka GitHub Releases untuk mengunduh installer Windows.
-start "" "https://github.com/ydddea-code/fets-local-anime/releases/latest"
+echo Letakkan aplikasi di folder output Fets Anime, lalu jalankan kembali file ini.
+pause

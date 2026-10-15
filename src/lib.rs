@@ -18,7 +18,7 @@ pub struct EmbeddedServer {
 /// Start the local-only backend for the desktop shell on an OS-selected port.
 pub async fn start_embedded_server(data_dir: PathBuf) -> anyhow::Result<EmbeddedServer> {
     std::fs::create_dir_all(&data_dir)?;
-    for directory in ["thumbs", "subtitles", "hls"] {
+    for directory in ["thumbs", "subtitles", "hls", "covers"] {
         std::fs::create_dir_all(data_dir.join(directory))?;
     }
 

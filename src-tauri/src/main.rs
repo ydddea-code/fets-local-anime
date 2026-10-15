@@ -47,17 +47,31 @@ fn main() {
                                 return;
                             }
                         };
-                        if let Err(error) =
-                            WebviewWindowBuilder::new(&handle, "main", WebviewUrl::External(url))
-                                .title("Fets Anime")
-                                .inner_size(1280.0, 820.0)
-                                .min_inner_size(900.0, 620.0)
-                                .center()
-                                .build()
+                        let _window = match WebviewWindowBuilder::new(
+                            &handle,
+                            "main",
+                            WebviewUrl::External(url),
+                        )
+                        .title("Fets Anime")
+                        .inner_size(1280.0, 820.0)
+                        .min_inner_size(900.0, 620.0)
+                        .center()
+                        .build()
                         {
-                            tracing::error!(%error, "could not create desktop window");
-                            server.task.abort();
-                            return;
+                            Ok(window) => window,
+                            Err(error) => {
+                                tracing::error!(%error, "could not create desktop window");
+                                server.task.abort();
+                                return;
+                            }
+                        };
+                        #[cfg(target_os = "windows")]
+                        match _window.hwnd() {
+                            Ok(hwnd) => {
+                                let id = hwnd.0 as usize as u32;
+                                std::env::set_var("FETS_MPV_PARENT_HWND", id.to_string());
+                            }
+                            Err(error) => tracing::warn!(%error, "mpv will use a separate window"),
                         }
                         // Keep the axum server alive for the lifetime of the window.
                         if let Err(error) = server.task.await {

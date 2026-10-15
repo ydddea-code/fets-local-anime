@@ -14,13 +14,14 @@ Setelah terpasang, buka **Fets Anime** dari Start Menu atau Desktop.
 
 1. Buka **Pengaturan → Tambah Folder** dan pilih folder koleksi anime.
 2. Tunggu pemindaian selesai; file video akan muncul di perpustakaan.
-3. Pilih anime dan episode untuk mulai menonton.
+3. Buka detail anime dan unggah cover JPG, PNG, atau WebP (maksimal 8 MB) bila ingin memakai poster sendiri.
+4. Pilih episode untuk mulai menonton.
 
 File baru di folder library akan terdeteksi otomatis. Untuk memulai ulang pemindaian, pilih **Pindai ulang** di Pengaturan.
 
 ## Pemutar dan data
 
-Pemutar otomatis mencoba video bawaan aplikasi, lalu beralih ke mpv bila pemutaran gagal. mpv, FFmpeg, dan ffprobe disertakan dalam installer. Jalurnya dapat diganti di Pengaturan bila diperlukan.
+Pemutar otomatis mencoba video bawaan aplikasi, lalu beralih ke mpv di dalam jendela Fets Anime bila pemutaran gagal. Gunakan kontrol OSD mpv; tekan `Q` untuk menutup video dan kembali ke aplikasi. FFmpeg, ffprobe, dan mpv disertakan dalam installer. Jalurnya dapat diganti di Pengaturan bila diperlukan.
 
 Database, pengaturan, thumbnail, dan cache disimpan di `%APPDATA%\FetsAnime`. Saat menghapus aplikasi, installer menanyakan apakah data tersebut ikut dihapus.
 

@@ -3,6 +3,9 @@
 /src-tauri/gen/schemas
 /src-tauri/binaries/*.exe
 /src-tauri/binaries/*.dll
+/src-tauri/binaries/*.bat
+/src-tauri/binaries/*.com
+/work-build-tools/
 /licenses/third-party/*
 !/licenses/third-party/.gitkeep
 /.cargo-home

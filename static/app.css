@@ -186,6 +186,11 @@ body { min-width: 360px; }
 .empty-icon { color:var(--accent); font-size:3rem; margin-bottom:.5rem; }
 .anime-header { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:1.25rem; margin:1rem 0 2rem; }
 .anime-header .poster { width:180px; aspect-ratio:2/3; border-radius:10px; object-fit:cover; background:var(--surface-2); }
+.anime-header .poster-placeholder { display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:2.5rem; }
+.cover-upload { display:flex; align-items:end; flex-wrap:wrap; gap:.6rem; margin-top:1rem; }
+.cover-upload label { margin:0; }
+.cover-upload input { display:block; max-width:min(100%,360px); margin-top:.35rem; }
+.cover-upload p { flex-basis:100%; margin:.1rem 0; color:var(--muted); }
 .back-link { display:inline-block; margin-bottom:1rem; color:var(--muted); }
 .episode-play { color:var(--accent); padding:.5rem; }
 .episode-section { max-width:900px; }

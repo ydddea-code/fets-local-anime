@@ -97,12 +97,22 @@ pub fn ipc_pipe(id: &str) -> String {
 /// Build the fixed mpv argument list for one episode. The input path must be
 /// a server-validated canonical path, never something the client chose.
 pub fn build_args(pipe: &str, start_sec: f64, file: &Path) -> Vec<String> {
+    build_args_with_parent(pipe, start_sec, file, None)
+}
+
+/// Build arguments for mpv embedded in a native parent window when available.
+pub fn build_args_with_parent(
+    pipe: &str,
+    start_sec: f64,
+    file: &Path,
+    parent_hwnd: Option<u32>,
+) -> Vec<String> {
     let start = if start_sec.is_finite() && start_sec > 0.5 {
         format!("--start={start_sec:.3}")
     } else {
         "--start=0".to_string()
     };
-    vec![
+    let mut args = vec![
         "--force-window=yes".into(),
         "--keep-open=yes".into(),
         start,
@@ -110,7 +120,11 @@ pub fn build_args(pipe: &str, start_sec: f64, file: &Path) -> Vec<String> {
         format!("--input-ipc-server={pipe}"),
         "--no-terminal".into(),
         file.to_string_lossy().into_owned(),
-    ]
+    ];
+    if let Some(hwnd) = parent_hwnd.filter(|hwnd| *hwnd != 0) {
+        args.insert(0, format!("--wid={hwnd}"));
+    }
+    args
 }
 
 /// Convert an mpv property-change event into a database progress update.

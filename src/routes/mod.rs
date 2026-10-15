@@ -11,7 +11,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
@@ -44,6 +44,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/hls/:id/master.m3u8", get(hls_playlist))
         .route("/hls/:id/:segment", get(hls_segment))
         .route("/thumb/:id.jpg", get(episode_thumbnail))
+        .route("/cover/:id", get(anime_cover))
         .route("/subs/:id.vtt", get(subtitle_vtt))
         .route("/api/episode/:id/subtitles", get(list_subtitles))
         .route("/api/anime", get(list_anime).post(add_anime))
@@ -53,6 +54,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::patch(set_metadata_lock),
         )
         .route("/api/anime/:id/episodes", post(add_episode))
+        .route(
+            "/api/anime/:id/cover",
+            post(upload_anime_cover).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
         .route("/api/library/scan", post(scan_library))
         .route("/api/library/status", get(scan_status))
         .route("/api/library/events", get(scan_events))
@@ -210,15 +215,23 @@ fn page(title: &str, body: &str) -> Html<String> {
 }
 
 async fn home(State(state): State<Arc<AppState>>) -> Result<Html<String>, AppError> {
-    let rows = sqlx::query("SELECT a.id, a.title, (SELECT e.id FROM episode e WHERE e.anime_id=a.id AND e.thumb_path IS NOT NULL ORDER BY e.season,e.number LIMIT 1) AS thumb_id FROM anime a ORDER BY a.title")
+    let rows = sqlx::query("SELECT a.id, a.title, a.cover_path, (SELECT e.id FROM episode e WHERE e.anime_id=a.id AND e.thumb_path IS NOT NULL ORDER BY e.season,e.number LIMIT 1) AS thumb_id FROM anime a ORDER BY a.title")
         .fetch_all(&state.pool)
         .await?;
     let mut cards = String::new();
     for row in rows {
         let id: i64 = row.try_get("id")?;
         let title: String = row.try_get("title")?;
+        let cover_path: Option<String> = row.try_get("cover_path")?;
         let thumb_id: Option<i64> = row.try_get("thumb_id")?;
-        let art = thumb_id.map(|episode_id| format!("<img class=\"poster-art\" src=\"/thumb/{episode_id}.jpg\" alt=\"\" loading=\"lazy\">")).unwrap_or_else(|| "<div class=\"poster-placeholder\" aria-hidden=\"true\">▦</div>".to_string());
+        let art = if cover_path.is_some() {
+            format!(
+                "<img class=\"poster-art\" src=\"/cover/{id}\" alt=\"Cover {}\" loading=\"lazy\">",
+                escape(&title)
+            )
+        } else {
+            thumb_id.map(|episode_id| format!("<img class=\"poster-art\" src=\"/thumb/{episode_id}.jpg\" alt=\"\" loading=\"lazy\">" )).unwrap_or_else(|| "<div class=\"poster-placeholder\" aria-hidden=\"true\">▦</div>".to_string())
+        };
         cards.push_str(&format!(
             "<article><a class=\"anime-tile\" href=\"/anime/{id}\">{art}<span>{}</span></a></article>",
             escape(&title)
@@ -249,15 +262,17 @@ async fn anime_page(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Html<String>, AppError> {
-    let anime =
-        sqlx::query("SELECT title,synopsis,poster_path,metadata_locked FROM anime WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let anime = sqlx::query(
+        "SELECT title,synopsis,poster_path,cover_path,metadata_locked FROM anime WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let title: String = anime.try_get("title")?;
     let synopsis: Option<String> = anime.try_get("synopsis")?;
     let poster_url: Option<String> = anime.try_get("poster_path")?;
+    let cover_path: Option<String> = anime.try_get("cover_path")?;
     let metadata_locked: bool = anime.try_get("metadata_locked")?;
     let episodes = sqlx::query(
         "SELECT id, season, number, title, thumb_path FROM episode WHERE anime_id = ? ORDER BY season, number",
@@ -281,16 +296,26 @@ async fn anime_page(
         ));
     }
     let manual = format!("<h2>Tambah episode dari file library</h2><form id=\"episode\"><label>Path file<input name=\"file_path\" required></label><label>Season<input type=\"number\" name=\"season\" min=1></label><label>Nomor episode<input type=\"number\" name=\"number\" step=\"0.1\"></label><button>Tambah episode</button></form><p id=\"message\"></p><script>document.querySelector('#episode').addEventListener('submit',async e=>{{e.preventDefault();const f=new FormData(e.target);const body={{file_path:f.get('file_path'),season:f.get('season')?Number(f.get('season')):null,number:f.get('number')?Number(f.get('number')):null}};const r=await fetch('/api/anime/{id}/episodes',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}});document.querySelector('#message').textContent=r.ok?'Episode ditambahkan':await r.text();if(r.ok)location.reload();}});</script>");
-    let poster = poster_url
-        .filter(|url| url.starts_with("https://"))
-        .map(|url| {
-            format!(
-                "<img class=\"poster\" src=\"{}\" alt=\"Poster {}\">",
-                escape(&url),
-                escape(&title)
-            )
-        })
-        .unwrap_or_default();
+    let poster = if cover_path.is_some() {
+        format!(
+            "<img class=\"poster\" src=\"/cover/{id}\" alt=\"Cover {}\">",
+            escape(&title)
+        )
+    } else {
+        poster_url
+            .filter(|url| url.starts_with("https://"))
+            .map(|url| {
+                format!(
+                    "<img class=\"poster\" src=\"{}\" alt=\"Poster {}\">",
+                    escape(&url),
+                    escape(&title)
+                )
+            })
+            .unwrap_or_else(|| {
+                "<div class=\"poster poster-placeholder\" aria-hidden=\"true\">▦</div>".into()
+            })
+    };
+    let cover_form = format!("<form class=\"cover-upload\" id=\"cover-form\"><label>Cover anime<input name=\"cover\" type=\"file\" accept=\"image/jpeg,image/png,image/webp\" required></label><button class=\"secondary\" type=\"submit\">Unggah cover</button><p id=\"cover-message\" role=\"status\"></p></form><script>document.querySelector('#cover-form').addEventListener('submit',async e=>{{e.preventDefault();const r=await fetch('/api/anime/{id}/cover',{{method:'POST',body:new FormData(e.target)}});document.querySelector('#cover-message').textContent=r.ok?'Cover diperbarui':await r.text();if(r.ok)location.reload();}});</script>");
     let synopsis = synopsis
         .map(|text| format!("<p>{}</p>", escape(&text)))
         .unwrap_or_default();
@@ -302,10 +327,111 @@ async fn anime_page(
     Ok(page(
         &title,
         &format!(
-            "<a class=\"back-link\" href=\"/\">← Perpustakaan</a><section class=\"anime-header\">{poster}<div><p class=\"eyebrow\">ANIME</p><h1>{}</h1>{synopsis}{metadata_ui}</div></section><section class=\"episode-section\"><h2>Episode</h2><ul class=\"episodes\">{list}</ul></section><section class=\"card\">{manual}</section>",
+            "<a class=\"back-link\" href=\"/\">← Perpustakaan</a><section class=\"anime-header\">{poster}<div><p class=\"eyebrow\">ANIME</p><h1>{}</h1>{synopsis}{cover_form}{metadata_ui}</div></section><section class=\"episode-section\"><h2>Episode</h2><ul class=\"episodes\">{list}</ul></section><section class=\"card\">{manual}</section>",
             escape(&title)
         ),
     ))
+}
+
+const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
+
+async fn upload_anime_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    mut multipart: Multipart,
+) -> Result<StatusCode, AppError> {
+    let previous: Option<String> = sqlx::query_scalar("SELECT cover_path FROM anime WHERE id=?")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let field = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::BadRequest("file cover tidak valid".into()))?
+        .ok_or_else(|| AppError::BadRequest("pilih file cover terlebih dahulu".into()))?;
+    if field.name() != Some("cover") {
+        return Err(AppError::BadRequest(
+            "field upload harus bernama cover".into(),
+        ));
+    }
+    let file_name = field.file_name().unwrap_or_default().to_ascii_lowercase();
+    let extension = match FsPath::new(&file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+    {
+        Some("jpg" | "jpeg") => "jpg",
+        Some("png") => "png",
+        Some("webp") => "webp",
+        _ => {
+            return Err(AppError::BadRequest(
+                "format cover harus JPG, PNG, atau WebP".into(),
+            ))
+        }
+    };
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|_| AppError::BadRequest("file cover tidak dapat dibaca".into()))?;
+    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES {
+        return Err(AppError::BadRequest(
+            "ukuran cover harus di bawah 8 MB".into(),
+        ));
+    }
+    let valid_image = match extension {
+        "jpg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        _ => false,
+    };
+    if !valid_image {
+        return Err(AppError::BadRequest(
+            "isi file bukan gambar JPG, PNG, atau WebP yang valid".into(),
+        ));
+    }
+    let covers_dir = PathBuf::from(state.settings_snapshot().data.dir).join("covers");
+    tokio::fs::create_dir_all(&covers_dir).await?;
+    tokio::fs::write(covers_dir.join(format!("{id}.{extension}")), bytes).await?;
+    sqlx::query("UPDATE anime SET cover_path=?,updated_at=datetime('now') WHERE id=?")
+        .bind(extension)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    if let Some(previous) = previous.filter(|ext| matches!(ext.as_str(), "jpg" | "png" | "webp")) {
+        if previous != extension {
+            let _ = tokio::fs::remove_file(covers_dir.join(format!("{id}.{previous}"))).await;
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn anime_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let extension: Option<String> = sqlx::query_scalar("SELECT cover_path FROM anime WHERE id=?")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let extension = extension.ok_or(AppError::NotFound)?;
+    let content_type = match extension.as_str() {
+        "jpg" => HeaderValue::from_static("image/jpeg"),
+        "png" => HeaderValue::from_static("image/png"),
+        "webp" => HeaderValue::from_static("image/webp"),
+        _ => return Err(AppError::NotFound),
+    };
+    let path = PathBuf::from(state.settings_snapshot().data.dir)
+        .join("covers")
+        .join(format!("{id}.{extension}"));
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    Ok(response)
 }
 
 async fn refresh_metadata(
@@ -445,7 +571,7 @@ async fn watch_page(
     } else {
         ""
     };
-    let body = format!("<h1>{} · S{season:02} E{number}</h1><div class=\"player-toolbar\"><label>Subtitle <select id=\"subtitle-select\"><option value=\"\">Nonaktif</option>{subtitle_options}</select></label><button type=\"button\" class=\"secondary\" onclick=\"window.fetsPlayWithMpv()\">Putar dengan mpv</button></div><video id=\"player\" data-episode=\"{id}\" data-mode=\"{}\" data-src=\"{}\" controls preload=\"metadata\">{tracks}</video><p id=\"player-error\" role=\"status\">Jika mpv belum ditemukan, <a href=\"/settings\">pilih mpv.exe di Pengaturan</a> atau <a href=\"https://mpv.io/installation/\" target=\"_blank\" rel=\"noreferrer\">unduh mpv resmi</a>.</p>{next_link}{hls_script}<script src=\"/static/player.js\" defer></script>", escape(&title), escape(&player_mode), escape(&source));
+    let body = format!("<h1>{} · S{season:02} E{number}</h1><div class=\"player-toolbar\"><label>Subtitle <select id=\"subtitle-select\"><option value=\"\">Nonaktif</option>{subtitle_options}</select></label><button type=\"button\" class=\"secondary\" onclick=\"window.fetsPlayWithMpv()\">Putar di aplikasi dengan mpv</button></div><video id=\"player\" data-episode=\"{id}\" data-mode=\"{}\" data-src=\"{}\" controls preload=\"metadata\">{tracks}</video><p id=\"player-error\" role=\"status\">Jika mpv belum ditemukan, <a href=\"/settings\">pilih mpv.exe di Pengaturan</a> atau <a href=\"https://mpv.io/installation/\" target=\"_blank\" rel=\"noreferrer\">unduh mpv resmi</a>.</p>{next_link}{hls_script}<script src=\"/static/player.js\" defer></script>", escape(&title), escape(&player_mode), escape(&source));
     Ok(page(&title, &body))
 }
 
@@ -631,7 +757,10 @@ async fn play_with_mpv(
     let media_path = validate_library_path(&state, &stored_path)?;
     let id = uuid::Uuid::new_v4().to_string();
     let pipe = mpv::ipc_pipe(&id);
-    let args = mpv::build_args(&pipe, input.position_sec, &media_path);
+    let parent_hwnd = std::env::var("FETS_MPV_PARENT_HWND")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let args = mpv::build_args_with_parent(&pipe, input.position_sec, &media_path, parent_hwnd);
     tracing::info!(episode_id = input.episode_id, reason = ?input.reason, "launching mpv playback");
     let child = MpvSession::spawn(&mpv_path, &id, &args)
         .map_err(|error| AppError::Unavailable(format!("mpv tidak dapat dijalankan: {error}")))?
