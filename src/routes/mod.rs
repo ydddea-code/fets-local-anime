@@ -206,19 +206,21 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn page(title: &str, body: &str) -> Html<String> {
-    Html(format!("<!doctype html><html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title><link rel=\"stylesheet\" href=\"/static/app.css\"></head><body><header><a href=\"/\">Anime Stream</a><nav><a href=\"/settings\">Pengaturan</a></nav></header><main>{}</main></body></html>", escape(title), body))
+    Html(format!("<!doctype html><html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#101014\"><title>{}</title><link rel=\"stylesheet\" href=\"/static/app.css\"></head><body><aside class=\"sidebar\"><a class=\"brand\" href=\"/\">Fets <span>Anime</span></a><nav class=\"side-nav\"><a href=\"/\">▦ <span class=\"nav-label\">Perpustakaan</span></a><a href=\"/#lanjutkan\">▶ <span class=\"nav-label\">Lanjutkan</span></a><a href=\"/settings\">⚙ <span class=\"nav-label\">Pengaturan</span></a></nav><div class=\"sidebar-footer\">Koleksi lokalmu</div></aside><main class=\"content\">{}</main><script src=\"/static/settings.js\" defer></script></body></html>", escape(title), body))
 }
 
 async fn home(State(state): State<Arc<AppState>>) -> Result<Html<String>, AppError> {
-    let rows = sqlx::query("SELECT id, title FROM anime ORDER BY title")
+    let rows = sqlx::query("SELECT a.id, a.title, (SELECT e.id FROM episode e WHERE e.anime_id=a.id AND e.thumb_path IS NOT NULL ORDER BY e.season,e.number LIMIT 1) AS thumb_id FROM anime a ORDER BY a.title")
         .fetch_all(&state.pool)
         .await?;
     let mut cards = String::new();
     for row in rows {
         let id: i64 = row.try_get("id")?;
         let title: String = row.try_get("title")?;
+        let thumb_id: Option<i64> = row.try_get("thumb_id")?;
+        let art = thumb_id.map(|episode_id| format!("<img class=\"poster-art\" src=\"/thumb/{episode_id}.jpg\" alt=\"\" loading=\"lazy\">")).unwrap_or_else(|| "<div class=\"poster-placeholder\" aria-hidden=\"true\">▦</div>".to_string());
         cards.push_str(&format!(
-            "<article><h2><a href=\"/anime/{id}\">{}</a></h2></article>",
+            "<article><a class=\"anime-tile\" href=\"/anime/{id}\">{art}<span>{}</span></a></article>",
             escape(&title)
         ));
     }
@@ -231,16 +233,16 @@ async fn home(State(state): State<Arc<AppState>>) -> Result<Html<String>, AppErr
         let season: i64 = row.try_get("season")?;
         let number: f64 = row.try_get("number")?;
         let position: f64 = row.try_get("position_sec")?;
-        format!("<section><h2>Lanjutkan menonton</h2><a href=\"/watch/{id}\">{} · S{season:02} E{number} ({position:.0} detik)</a></section>", escape(&title))
+        format!("<section id=\"lanjutkan\" class=\"resume-card\"><div><p class=\"eyebrow\">LANJUTKAN MENONTON</p><h2>{}</h2><p class=\"muted\">Musim {season} · Episode {number} · {:.0} detik</p></div><a class=\"btn\" href=\"/watch/{id}\">Lanjutkan <span aria-hidden=\"true\">→</span></a></section>", escape(&title), position)
     } else {
         String::new()
     };
     let empty = if cards.is_empty() {
-        "<section class=\"empty-state\"><h2>Belum ada anime</h2><p>Tambahkan folder berisi koleksi anime milikmu.</p><button id=\"add-folder\" type=\"button\">Tambah folder anime</button></section>"
+        "<section class=\"empty-state\"><div class=\"empty-icon\">▦</div><h1>Perpustakaanmu masih kosong</h1><p>Tambahkan folder anime untuk mulai membangun koleksi dan melanjutkan tontonanmu.</p><button id=\"add-folder\" class=\"big\" type=\"button\">Tambah folder anime</button></section>"
     } else {
         ""
     };
-    Ok(page("Library", &format!("<h1>Perpustakaan</h1>{resume_html}{empty}<section class=\"grid\">{cards}</section><p><a href=\"/add\">Tambah anime manual</a> · <a href=\"/settings\">Pengaturan</a></p><script src=\"/static/settings.js\" defer></script>")))
+    Ok(page("Perpustakaan", &format!("<header class=\"page-heading\"><div><p class=\"eyebrow\">KOLEKSI PRIBADI</p><h1>Perpustakaan</h1></div><a class=\"btn\" href=\"/settings\">＋ Tambah Folder</a></header>{resume_html}<section><h2>Semua anime</h2>{empty}<div class=\"poster-grid\">{cards}</div></section>")))
 }
 
 async fn anime_page(
@@ -274,7 +276,7 @@ async fn anime_page(
             .map(|_| format!("<img class=\"episode-thumb\" src=\"/thumb/{eid}.jpg\" alt=\"\"> "))
             .unwrap_or_default();
         list.push_str(&format!(
-            "<li>{image}<a href=\"/watch/{eid}\">S{season:02} E{number} {}</a></li>",
+            "<li>{image}<div class=\"ep-info\"><a href=\"/watch/{eid}\">S{season:02} E{number} {}</a></div><a class=\"episode-play\" href=\"/watch/{eid}\" aria-label=\"Putar episode\">▶</a></li>",
             escape(label.as_deref().unwrap_or(""))
         ));
     }
@@ -300,7 +302,7 @@ async fn anime_page(
     Ok(page(
         &title,
         &format!(
-            "{poster}<h1>{}</h1>{synopsis}{metadata_ui}<ol>{list}</ol>{manual}",
+            "<a class=\"back-link\" href=\"/\">← Perpustakaan</a><section class=\"anime-header\">{poster}<div><p class=\"eyebrow\">ANIME</p><h1>{}</h1>{synopsis}{metadata_ui}</div></section><section class=\"episode-section\"><h2>Episode</h2><ul class=\"episodes\">{list}</ul></section><section class=\"card\">{manual}</section>",
             escape(&title)
         ),
     ))
@@ -461,7 +463,7 @@ async fn settings_page(State(state): State<Arc<AppState>>) -> Html<String> {
       <label>ffprobe.exe <div class="input-row"><input id="ffprobe-path"><button class="secondary" type="button" data-pick="ffprobe_path">Pilih ffprobe.exe</button></div></label></section>
       <section class="card"><h2>Preferensi</h2><label>Tema<select id="theme"><option value="dark">Gelap</option><option value="light">Terang</option><option value="system">Ikuti Windows</option></select></label>
       <label class="check-row"><input id="watch" type="checkbox"> Pindai otomatis saat folder berubah</label><label class="check-row"><input id="anilist" type="checkbox"> Ambil metadata dari AniList</label>
-      <p id="settings-status" role="status" aria-live="polite"></p></section><script src="/static/settings.js" defer></script>"#,
+      <p id="settings-status" role="status" aria-live="polite"></p></section>"#,
     )
 }
 

@@ -170,3 +170,24 @@ ul.library-list li span.path { flex: 1; min-width: 0; overflow: hidden; text-ove
   main.content { padding: 1rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Desktop library surfaces */
+body { min-width: 360px; }
+.content { max-width: 1600px; margin: 0 auto; }
+.page-heading { display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:1.5rem; }
+.page-heading h1 { margin:0; }
+.eyebrow { color:var(--muted); letter-spacing:.12em; font-size:.72rem; font-weight:700; margin:0 0 .35rem; }
+.resume-card { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1.25rem 1.5rem; border-radius:14px; background:linear-gradient(115deg, color-mix(in srgb, var(--accent) 24%, var(--surface)), var(--surface)); border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); margin:1.5rem 0 2rem; }
+.resume-card h2 { margin:.1rem 0; font-size:1.2rem; }
+.resume-card p { margin:.25rem 0; }
+.poster-grid .anime-tile { padding:0; }
+.poster-grid .poster-art, .poster-grid .poster-placeholder { display:flex; width:100%; aspect-ratio:2/3; object-fit:cover; align-items:center; justify-content:center; background:linear-gradient(145deg,var(--surface-2),var(--surface)); color:var(--muted); font-size:2rem; }
+.poster-grid .anime-tile span { display:block; padding:.75rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.empty-icon { color:var(--accent); font-size:3rem; margin-bottom:.5rem; }
+.anime-header { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:1.25rem; margin:1rem 0 2rem; }
+.anime-header .poster { width:180px; aspect-ratio:2/3; border-radius:10px; object-fit:cover; background:var(--surface-2); }
+.back-link { display:inline-block; margin-bottom:1rem; color:var(--muted); }
+.episode-play { color:var(--accent); padding:.5rem; }
+.episode-section { max-width:900px; }
+main.content > header:not(.page-heading) { border:0; padding:0; background:transparent; }
+@media(max-width:680px) { .resume-card { align-items:flex-start; flex-direction:column; } .page-heading { align-items:flex-start; } .page-heading .btn { padding:.5rem .7rem; } .anime-header .poster { width:120px; } }
