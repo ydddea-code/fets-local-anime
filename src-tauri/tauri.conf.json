@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Fets Anime",
+  "version": "0.1.0",
+  "identifier": "FetsAnime",
+  "build": {
+    "frontendDist": "../static"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": ["default"],
+      "csp": "default-src 'self' http://127.0.0.1:*; img-src 'self' data: http://127.0.0.1:*; media-src 'self' blob: http://127.0.0.1:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:*; script-src 'self' 'unsafe-inline' http://127.0.0.1:*; connect-src ipc: http://127.0.0.1:*"
+    },
+    "windows": []
+  },
+  "bundle": {
+    "active": false,
+    "targets": [],
+    "category": "Video",
+    "resources": {
+      "../static/": "static/"
+    },
+    "shortDescription": "Pemutar anime lokal",
+    "longDescription": "Aplikasi desktop Windows untuk mengelola dan menonton anime dari file milik pengguna."
+  }
+}

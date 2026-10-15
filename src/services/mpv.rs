@@ -118,7 +118,10 @@ pub fn progress_from_event(event: &Value) -> Option<(f64, bool)> {
     let value = data.get("value").unwrap_or(data);
     match event.get("name").and_then(Value::as_str)? {
         "time-pos" => Some((value.as_f64()?, false)),
-        "eof-reached" => value.as_bool().filter(|reached| *reached).map(|_| (0.0, true)),
+        "eof-reached" => value
+            .as_bool()
+            .filter(|reached| *reached)
+            .map(|_| (0.0, true)),
         _ => None,
     }
 }
@@ -147,13 +150,6 @@ impl MpvSession {
     /// Take ownership of the child handle (used by the IPC watcher task).
     pub fn into_child(self) -> Child {
         self.child
-    }
-}
-
-impl Drop for MpvSession {
-    fn drop(&mut self) {
-        // kill_on_drop handles termination; request it explicitly too.
-        let _ = self.child.start_kill();
     }
 }
 
@@ -189,23 +185,22 @@ pub mod pipe_io {
     //! hence the retry loop.
 
     use std::io;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_SEQUENTIAL_SCAN,
-        GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING,
+        OPEN_EXISTING,
     };
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 
-    pub struct PipeHandle(isize);
+    pub struct PipeHandle(HANDLE);
 
     impl PipeHandle {
         /// Open the mpv IPC pipe, waiting up to `retries` attempts for mpv
         /// to create it.
         pub fn open(pipe_path: &str, retries: u32) -> io::Result<Self> {
-            let wide: Vec<u16> = pipe_path
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide: Vec<u16> = pipe_path.encode_utf16().chain(std::iter::once(0)).collect();
             let mut last_error = io::Error::other("mpv pipe was never created");
             for attempt in 0..retries.max(1) {
                 let handle = unsafe {
@@ -334,9 +329,11 @@ mod tests {
         assert_eq!(progress_from_event(&eof), Some((0.0, true)));
         let not_eof = serde_json::json!({"event_id":"property-change","name":"eof-reached","data":{"value":false}});
         assert_eq!(progress_from_event(&not_eof), None);
-        let pause = serde_json::json!({"event_id":"property-change","name":"pause","data":{"value":true}});
+        let pause =
+            serde_json::json!({"event_id":"property-change","name":"pause","data":{"value":true}});
         assert_eq!(progress_from_event(&pause), None);
-        let legacy = serde_json::json!({"event_id":"property-change","name":"time-pos","data":99.0});
+        let legacy =
+            serde_json::json!({"event_id":"property-change","name":"time-pos","data":99.0});
         assert_eq!(progress_from_event(&legacy), Some((99.0, false)));
         let start_event = serde_json::json!({"event_id":"start"});
         assert_eq!(progress_from_event(&start_event), None);

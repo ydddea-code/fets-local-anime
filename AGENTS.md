@@ -1,5 +1,10 @@
-# Proyek: Local Anime Streaming Server (Rust)
+# Proyek: Fets Anime (Windows Desktop, Rust + Tauri 2)
 
+> Produk utama adalah aplikasi desktop native khusus Windows 10/11 x64.
+> Tauri 2/WebView2 menyediakan jendela; axum dan backend Rust berjalan embedded
+> di proses yang sama pada loopback port acak. Jangan jadikan browser/server LAN
+> sebagai alur pemakaian utama.
+>
 > Dokumen ini adalah spesifikasi lengkap sekaligus panduan kerja untuk Codex.
 > Simpan sebagai `AGENTS.md` di root repo agar Codex membacanya otomatis di setiap sesi.
 > Bahasa dokumen: Indonesia. Identifier kode, nama komit, dan komentar kode: Inggris.
@@ -8,15 +13,15 @@
 
 ## 1. Ringkasan
 
-Membuat aplikasi **streaming anime lokal (self-hosted)** seperti Jellyfin/Plex versi ringan, ditulis dengan **Rust**.
-Pengguna dapat **menambahkan anime sendiri** (file video milik pribadi) ke dalam library, lalu menontonnya lewat browser di jaringan lokal (LAN) atau di komputer yang sama.
+Membuat aplikasi **desktop lokal untuk menonton anime** seperti Jellyfin/Plex versi ringan, ditulis dengan **Rust** dan Tauri 2.
+Pengguna menambahkan folder berisi file video milik pribadi, lalu menontonnya dalam jendela Windows aplikasi. Mode server LAN bukan alur utama dan tidak masuk build default.
 
 > **Catatan hukum:** Aplikasi ini hanya untuk memutar file yang pengguna miliki secara sah
 > (rip pribadi dari DVD/BD, file legal, dsb.). Aplikasi tidak boleh menyertakan fitur
 > scraping/download dari situs pihak ketiga.
 
 ### Tujuan
-- Satu binary yang mudah dijalankan (`cargo run` / satu file executable).
+- Aplikasi Windows yang dibuka dari Start Menu atau desktop tanpa terminal, edit config, atau browser.
 - Tambah anime dengan 2 cara: (a) menaruh file di folder library lalu scan, (b) upload / tambah manual lewat UI.
 - Streaming mulus di browser (seek, subtitle, lanjut tonton dari terakhir).
 - Metadata otomatis (poster, sinopsis, judul) opsional dari AniList; tetap berfungsi **offline penuh**.

@@ -52,7 +52,7 @@ pub struct MetadataConfig {
     pub timeout_secs: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AuthConfig {
     /// Optional password protection; only meaningful in `server-mode`. The
@@ -93,8 +93,16 @@ impl Default for Config {
                 watch: true,
             },
             ffmpeg: FfmpegConfig {
-                ffmpeg_path: if cfg!(windows) { "ffmpeg.exe".into() } else { "ffmpeg".into() },
-                ffprobe_path: if cfg!(windows) { "ffprobe.exe".into() } else { "ffprobe".into() },
+                ffmpeg_path: if cfg!(windows) {
+                    "ffmpeg.exe".into()
+                } else {
+                    "ffmpeg".into()
+                },
+                ffprobe_path: if cfg!(windows) {
+                    "ffprobe.exe".into()
+                } else {
+                    "ffprobe".into()
+                },
                 hls_segment_seconds: 6,
                 max_concurrent_sessions: 2,
             },
@@ -114,7 +122,10 @@ impl Default for Config {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { host: "127.0.0.1".into(), port: 8010 }
+        Self {
+            host: "127.0.0.1".into(),
+            port: 8010,
+        }
     }
 }
 impl Default for LibraryConfig {
@@ -137,11 +148,6 @@ impl Default for MetadataConfig {
         Config::default().metadata
     }
 }
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self { enabled: false, password: String::new() }
-    }
-}
 impl Default for DesktopConfig {
     fn default() -> Self {
         Self {
@@ -158,13 +164,17 @@ fn default_data_dir() -> String {
     #[cfg(not(windows))]
     let base = directories_hint();
 
+    #[cfg(not(windows))]
     fn directories_hint() -> Option<std::path::PathBuf> {
         std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share")))
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join(".local/share"))
+            })
     }
 
-    base.map(|dir| dir.join("fets-anime").to_string_lossy().into_owned())
+    base.map(|dir| dir.join("FetsAnime").to_string_lossy().into_owned())
         .unwrap_or_else(|| "./data".into())
 }
 
@@ -174,11 +184,16 @@ fn default_library_dir() -> String {
     #[cfg(not(windows))]
     let profile = std::env::var_os("HOME");
     profile
-        .map(|p| std::path::PathBuf::from(p).join("Videos/Anime").to_string_lossy().into_owned())
+        .map(|p| {
+            std::path::PathBuf::from(p)
+                .join("Videos/Anime")
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_else(|| "./library".into())
 }
 
-type Settings = Config;
+pub type Settings = Config;
 
 impl Settings {
     /// Load the classic layered config (config.toml + environment). Used by
@@ -216,7 +231,8 @@ impl Settings {
     /// Persist the current settings next to the database (settings.toml).
     pub fn save(&self) -> Result<(), AppError> {
         let path = Path::new(&self.data.dir).join("settings.toml");
-        let text = toml::to_string_pretty(self).map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
+        let text = toml::to_string_pretty(self)
+            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
         fs::write(path, text).map_err(|e| crate::error::AppError::Internal(e.to_string()))
     }
 }
@@ -281,11 +297,14 @@ password = "secret"
     fn save_roundtrips_through_toml() {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::load_desktop(dir.path());
-        settings.library.paths.push(dir.path().join("Anime").to_string_lossy().into_owned());
+        settings
+            .library
+            .paths
+            .push(dir.path().join("Anime").to_string_lossy().into_owned());
         settings.desktop.theme = "light".into();
         settings.save().unwrap();
         let reloaded = Settings::load_desktop(dir.path());
-        assert_eq!(reloaded.library.paths.len(), 1);
+        assert_eq!(reloaded.library.paths.len(), 2);
         assert_eq!(reloaded.desktop.theme, "light");
     }
 }

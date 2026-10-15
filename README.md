@@ -1,13 +1,36 @@
 # Anime Stream
 
-Server lokal untuk mengelola dan menonton file anime yang dimiliki pengguna. Versi awal ini menyediakan scan folder, daftar anime dan episode, tambah manual, direct play dengan HTTP Range, serta progres dan lanjutkan menonton. Aplikasi tidak mengunduh atau mengambil video dari situs pihak ketiga.
+Fets Anime adalah aplikasi desktop Windows 10/11 x64 untuk mengelola dan menonton file anime milik pengguna. Shell native memakai Tauri 2 dan WebView2; backend axum berjalan di proses yang sama pada alamat loopback dengan port acak. Aplikasi tidak mengunduh atau mengambil video dari situs pihak ketiga.
+
+## Menjalankan aplikasi desktop (Windows)
+
+Prasyarat untuk build: Rust stable, Visual Studio Build Tools dengan workload C++, dan WebView2 Runtime. Jalankan perintah berikut dari `src-tauri`:
+
+```powershell
+cargo install tauri-cli --version "^2"
+cargo tauri dev
+```
+
+Build release lokal:
+
+```powershell
+cargo tauri build
+```
+
+Data aplikasi desktop disimpan di `%APPDATA%\FetsAnime` melalui direktori data Tauri. Pengaturan dibuat otomatis saat pertama kali dijalankan. `config.toml` tidak diperlukan.
+
+> Saat ini Tauri menjadi shell Windows utama. Installer NSIS, bootstrapper WebView2, sidecar media, pemilih folder native, dan integrasi menu Explorer masih dalam tahap implementasi.
+
+## Menjalankan backend untuk pengembangan
+
+Backend dapat dijalankan sendiri untuk pengembangan dengan `cargo run`. Mode ini bukan alur pemakaian aplikasi desktop.
 
 ## Prasyarat
 
 - Rust stable
 - FFmpeg dan ffprobe diperlukan untuk info stream, thumbnail, ekstrak subtitle embedded, dan HLS. Direct play serta subtitle eksternal tetap berfungsi tanpa keduanya.
 
-## Menjalankan
+## Mode server pengembangan (opsional)
 
 Salin `config.example.toml` menjadi `config.toml`, lalu atur folder library:
 

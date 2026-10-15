@@ -17,11 +17,10 @@ pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".local").join("share"))
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
         });
     let dir = base
-        .map(|base| base.join("fets-anime"))
+        .map(|base| base.join("FetsAnime"))
         .unwrap_or_else(|| PathBuf::from("./data"));
     let _ = std::fs::create_dir_all(&dir);
     dir.canonicalize().unwrap_or(dir)
@@ -39,25 +38,16 @@ pub fn display_path(path: &std::path::Path) -> String {
 /// Bind a listener on a free port of the requested range; used both to find
 /// a port for the embedded server and as the single-instance guard.
 pub fn bind_free_port(host: &str, first: u16, last: u16) -> Option<TcpListener> {
-    (first..=last).find_map(|port| {
-        TcpListener::bind((host, port)).ok()
-    })
+    (first..=last).find_map(|port| TcpListener::bind((host, port)).ok())
 }
 
 /// True when a Fets Anime server already answers on one of our ports — i.e.
 /// another instance is running and the shell should just navigate there.
 pub fn existing_instance(first: u16, last: u16) -> Option<u16> {
-    (first..=last).find(|port| health_probe(("127.0.0.1", *port)))
+    (first..=last).find(|port| health_probe(SocketAddr::from(([127, 0, 0, 1], *port))))
 }
 
-fn health_probe(addr: impl Into<SocketAddr> + Copy) -> bool {
-    let socket: SocketAddr = match addr.into() {
-        ok => ok,
-        #[cfg(unix)]
-        Err(_) => return false,
-        #[cfg(not(unix))]
-        Err(_) => return false,
-    };
+fn health_probe(socket: SocketAddr) -> bool {
     let Ok(mut stream) = TcpStream::connect_timeout(&socket, Duration::from_millis(400)) else {
         return false;
     };
@@ -81,8 +71,6 @@ use std::io::Write;
 /// window inside the desktop app (mpv intentionally shows its own window).
 #[cfg(windows)]
 pub mod windows_spawn {
-    use std::os::windows::process::CommandExt;
-
     pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     pub fn no_window(command: &mut tokio::process::Command) {
