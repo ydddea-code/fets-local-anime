@@ -67,6 +67,11 @@
   }
   window.fetsPlayWithMpv = () => fallbackToMpv("manual");
 
+  if (mode === "mpv") {
+    fallbackToMpv("default-player");
+    return;
+  }
+
   function attachErrorHandlers() {
     video.addEventListener("error", () => {
       if (mode === "html5") {
@@ -111,7 +116,11 @@
         }
       });
     } else {
-      fallbackToMpv("hls-unsupported");
+      if (mode === "html5") {
+        if (errorBox) errorBox.textContent = "Browser ini tidak mendukung HLS.";
+      } else {
+        fallbackToMpv("hls-unsupported");
+      }
     }
   }
 

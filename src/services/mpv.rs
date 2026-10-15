@@ -111,7 +111,12 @@ pub fn build_args(pipe: &str, start_sec: f64, file: &Path) -> Vec<String> {
 /// `time-pos` yields the current position; `eof-reached=true` marks the
 /// episode as watched. Other events (pause, idle...) are ignored here.
 pub fn progress_from_event(event: &Value) -> Option<(f64, bool)> {
-    if event.get("event_id").and_then(Value::as_str)? != "property-change" {
+    if event
+        .get("event")
+        .or_else(|| event.get("event_id"))
+        .and_then(Value::as_str)?
+        != "property-change"
+    {
         return None;
     }
     let data = event.get("data")?;
@@ -194,7 +199,15 @@ pub mod pipe_io {
     };
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 
-    pub struct PipeHandle(HANDLE);
+    pub struct PipeHandle {
+        handle: HANDLE,
+        buffered: std::sync::Mutex<Vec<u8>>,
+    }
+
+    // Windows pipe handles may be used across threads; the read buffer is
+    // mutex-protected and the OS serializes operations on the handle.
+    unsafe impl Send for PipeHandle {}
+    unsafe impl Sync for PipeHandle {}
 
     impl PipeHandle {
         /// Open the mpv IPC pipe, waiting up to `retries` attempts for mpv
@@ -215,7 +228,10 @@ pub mod pipe_io {
                     )
                 };
                 if handle != INVALID_HANDLE_VALUE {
-                    return Ok(Self(handle));
+                    return Ok(Self {
+                        handle,
+                        buffered: std::sync::Mutex::new(Vec::new()),
+                    });
                 }
                 last_error = io::Error::last_os_error();
                 // ERROR_PIPE_BUSY / NOT_FOUND: wait briefly then retry.
@@ -233,7 +249,7 @@ pub mod pipe_io {
             let mut written = 0u32;
             let ok = unsafe {
                 WriteFile(
-                    self.0,
+                    self.handle,
                     bytes.as_ptr(),
                     bytes.len() as u32,
                     &mut written,
@@ -249,13 +265,20 @@ pub mod pipe_io {
         /// Read one newline-delimited JSON line. Returns empty string at EOF
         /// (mpv closed the pipe => the player window was closed).
         pub fn read_line(&self) -> io::Result<String> {
-            let mut buffer = Vec::new();
+            let mut buffer = self
+                .buffered
+                .lock()
+                .map_err(|_| io::Error::other("mpv pipe buffer lock poisoned"))?;
             let mut chunk = [0u8; 4096];
             loop {
+                if let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
+                    let line = buffer.drain(..=newline).collect::<Vec<_>>();
+                    return Ok(String::from_utf8_lossy(&line[..line.len() - 1]).into_owned());
+                }
                 let mut read = 0u32;
                 let ok = unsafe {
                     ReadFile(
-                        self.0,
+                        self.handle,
                         chunk.as_mut_ptr(),
                         chunk.len() as u32,
                         &mut read,
@@ -263,25 +286,20 @@ pub mod pipe_io {
                     )
                 };
                 if ok == 0 || read == 0 {
-                    break;
+                    return Ok(String::from_utf8_lossy(&buffer).into_owned());
                 }
                 buffer.extend_from_slice(&chunk[..read as usize]);
-                if let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
-                    let line = buffer.drain(..=newline).collect::<Vec<_>>();
-                    return Ok(String::from_utf8_lossy(&line[..line.len() - 1]).into_owned());
-                }
                 if buffer.len() > 4 * 1024 * 1024 {
                     buffer.clear(); // runaway guard against malformed streams
                 }
             }
-            Ok(String::from_utf8_lossy(&buffer).into_owned())
         }
     }
 
     impl Drop for PipeHandle {
         fn drop(&mut self) {
             unsafe {
-                CloseHandle(self.0);
+                CloseHandle(self.handle);
             }
         }
     }
@@ -325,6 +343,9 @@ mod tests {
     fn parses_time_pos_and_eof_events() {
         let time = serde_json::json!({"event_id":"property-change","name":"time-pos","data":{"value":42.5}});
         assert_eq!(progress_from_event(&time), Some((42.5, false)));
+        let mpv_ipc =
+            serde_json::json!({"event":"property-change","id":1,"name":"time-pos","data":17.25});
+        assert_eq!(progress_from_event(&mpv_ipc), Some((17.25, false)));
         let eof = serde_json::json!({"event_id":"property-change","name":"eof-reached","data":{"value":true}});
         assert_eq!(progress_from_event(&eof), Some((0.0, true)));
         let not_eof = serde_json::json!({"event_id":"property-change","name":"eof-reached","data":{"value":false}});

@@ -2,6 +2,7 @@ use crate::{
     error::AppError,
     services::{
         hls::{supports_direct_play, valid_segment_name},
+        mpv::{self, MpvSession},
         parser::{parse_filename, ParsedEpisode},
         probe::{generate_thumbnail, probe},
         subtitles::to_webvtt,
@@ -58,6 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/library/add-folder", post(add_library_folder))
         .route("/api/library/remove-folder", post(remove_library_folder))
         .route("/api/settings", get(get_settings).post(save_settings))
+        .route("/api/mpv/play", post(play_with_mpv))
         .route("/api/progress/:id", get(get_progress).post(save_progress))
         .nest_service("/static", tower_http::services::ServeDir::new(static_dir()))
         .with_state(state)
@@ -388,6 +390,7 @@ async fn watch_page(
     let season: i64 = row.try_get("season")?;
     let number: f64 = row.try_get("number")?;
     let anime_id: i64 = row.try_get("anime_id")?;
+    let player_mode = state.settings_snapshot().desktop.player;
     let video_codec: Option<String> = row.try_get("video_codec")?;
     let audio_codec: Option<String> = row.try_get("audio_codec")?;
     let container: Option<String> = row.try_get("container")?;
@@ -403,11 +406,6 @@ async fn watch_page(
     } else {
         format!("/stream/{id}")
     };
-    let player_setup = if use_hls {
-        format!("<script src=\"/static/hls.min.js\"></script><script>const v=document.querySelector('video'),src='/hls/{id}/master.m3u8';if(v.canPlayType('application/vnd.apple.mpegurl')){{v.src=src;}}else if(window.Hls&&Hls.isSupported()){{const hls=new Hls();hls.loadSource(src);hls.attachMedia(v);}}else{{document.querySelector('#player-error').textContent='Browser ini tidak mendukung HLS.';}}</script>")
-    } else {
-        format!("<script>document.querySelector('video').src='{player_source}';</script>")
-    };
     let next: Option<i64> = sqlx::query_scalar("SELECT id FROM episode WHERE anime_id=? AND (season>? OR (season=? AND number>?)) ORDER BY season,number LIMIT 1")
         .bind(anime_id).bind(season).bind(season).bind(number).fetch_optional(&state.pool).await?;
     let next_link = next
@@ -415,17 +413,13 @@ async fn watch_page(
             format!("<p><a id=\"next\" href=\"/watch/{next_id}\">Episode berikutnya</a></p>")
         })
         .unwrap_or_default();
-    let next_script = next
-        .map(|next_id| {
-            format!("v.addEventListener('ended',()=>{{location.href='/watch/{next_id}'}});")
-        })
-        .unwrap_or_default();
     let subs = sqlx::query("SELECT id,lang,label FROM subtitle WHERE episode_id=? ORDER BY id")
         .bind(id)
         .fetch_all(&state.pool)
         .await?;
     let mut tracks = String::new();
-    for sub in subs {
+    let mut subtitle_options = String::new();
+    for (track_index, sub) in subs.into_iter().enumerate() {
         let sub_id: i64 = sub.try_get("id")?;
         let lang: Option<String> = sub.try_get("lang")?;
         let label: Option<String> = sub.try_get("label")?;
@@ -434,8 +428,22 @@ async fn watch_page(
             escape(lang.as_deref().unwrap_or("und")),
             escape(label.as_deref().unwrap_or("Subtitle"))
         ));
+        subtitle_options.push_str(&format!(
+            "<option value=\"{track_index}\">{}</option>",
+            escape(label.as_deref().unwrap_or("Subtitle"))
+        ));
     }
-    let body = format!("<h1>{} · S{season:02} E{number}</h1><video id=\"player\" controls preload=\"metadata\" src=\"{player_source}\">{tracks}</video><p id=\"player-error\"></p>{next_link}<script>const v=document.querySelector('video');let t;function save(){{fetch('/api/progress/{id}',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{position_sec:v.currentTime,watched:v.duration>0&&v.currentTime>=v.duration*.9}})}})}}v.addEventListener('loadedmetadata',async()=>{{const r=await fetch('/api/progress/{id}');if(r.ok){{const p=await r.json();if(p.position_sec>0&&p.position_sec<v.duration*.9)v.currentTime=p.position_sec;}}}});v.addEventListener('timeupdate',()=>{{if(!t)t=setInterval(save,10000)}});v.addEventListener('pause',save);v.addEventListener('ended',save);{next_script}</script>{player_setup}", escape(&title));
+    let source = if use_hls {
+        format!("/hls/{id}/master.m3u8")
+    } else {
+        player_source
+    };
+    let hls_script = if use_hls {
+        "<script src=\"/static/hls.min.js\"></script>"
+    } else {
+        ""
+    };
+    let body = format!("<h1>{} · S{season:02} E{number}</h1><div class=\"player-toolbar\"><label>Subtitle <select id=\"subtitle-select\"><option value=\"\">Nonaktif</option>{subtitle_options}</select></label><button type=\"button\" class=\"secondary\" onclick=\"window.fetsPlayWithMpv()\">Putar dengan mpv</button></div><video id=\"player\" data-episode=\"{id}\" data-mode=\"{}\" data-src=\"{}\" controls preload=\"metadata\">{tracks}</video><p id=\"player-error\" role=\"status\">Jika mpv belum ditemukan, <a href=\"/settings\">pilih mpv.exe di Pengaturan</a> atau <a href=\"https://mpv.io/installation/\" target=\"_blank\" rel=\"noreferrer\">unduh mpv resmi</a>.</p>{next_link}{hls_script}<script src=\"/static/player.js\" defer></script>", escape(&title), escape(&player_mode), escape(&source));
     Ok(page(&title, &body))
 }
 
@@ -591,6 +599,131 @@ async fn save_settings(
     }
     settings.save()?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct MpvPlayInput {
+    episode_id: i64,
+    position_sec: f64,
+    reason: Option<String>,
+}
+
+async fn play_with_mpv(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<MpvPlayInput>,
+) -> Result<StatusCode, AppError> {
+    if !input.position_sec.is_finite() || input.position_sec < 0.0 {
+        return Err(AppError::BadRequest("posisi pemutaran tidak valid".into()));
+    }
+    let settings = state.settings_snapshot();
+    let mpv_path = mpv::find_mpv(Some(&settings.desktop.mpv_path)).ok_or_else(|| {
+        AppError::Unavailable("mpv.exe tidak ditemukan. Pilih mpv.exe di Pengaturan atau unduh dari https://mpv.io/installation/".into())
+    })?;
+    let stored_path = sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM episode WHERE id=? AND removed_at IS NULL",
+    )
+    .bind(input.episode_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let media_path = validate_library_path(&state, &stored_path)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let pipe = mpv::ipc_pipe(&id);
+    let args = mpv::build_args(&pipe, input.position_sec, &media_path);
+    tracing::info!(episode_id = input.episode_id, reason = ?input.reason, "launching mpv playback");
+    let child = MpvSession::spawn(&mpv_path, &id, &args)
+        .map_err(|error| AppError::Unavailable(format!("mpv tidak dapat dijalankan: {error}")))?
+        .into_child();
+    tokio::spawn(watch_mpv_progress(
+        Arc::clone(&state),
+        input.episode_id,
+        pipe,
+        child,
+    ));
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn watch_mpv_progress(
+    state: Arc<AppState>,
+    episode_id: i64,
+    pipe: String,
+    mut child: tokio::process::Child,
+) {
+    #[cfg(windows)]
+    {
+        let pipe_path = pipe.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            crate::services::mpv::pipe_io::PipeHandle::open(&pipe_path, 50)
+        })
+        .await;
+        if let Ok(Ok(handle)) = opened {
+            let handle = Arc::new(handle);
+            let _ = handle.write_line(r#"{"command":["observe_property",1,"time-pos"]}"#);
+            let _ = handle.write_line(r#"{"command":["observe_property",2,"eof-reached"]}"#);
+            let _ = handle.write_line(r#"{"command":["observe_property",3,"pause"]}"#);
+            let mut position = 0.0;
+            let mut watched = false;
+            loop {
+                let reader = Arc::clone(&handle);
+                let line = tokio::task::spawn_blocking(move || reader.read_line()).await;
+                let Ok(Ok(line)) = line else { break };
+                if line.is_empty() {
+                    break;
+                }
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if event.get("event").and_then(serde_json::Value::as_str) == Some("property-change")
+                    && event.get("name").and_then(serde_json::Value::as_str) == Some("pause")
+                    && event.get("data").and_then(serde_json::Value::as_bool) == Some(true)
+                {
+                    if let Err(error) =
+                        save_mpv_progress(&state.pool, episode_id, position, watched).await
+                    {
+                        tracing::warn!(%error, episode_id, "could not save paused mpv progress");
+                    }
+                    continue;
+                }
+                if let Some((new_position, new_watched)) = mpv::progress_from_event(&event) {
+                    if !new_watched {
+                        position = new_position;
+                    }
+                    watched |= new_watched;
+                    if let Err(error) =
+                        save_mpv_progress(&state.pool, episode_id, position, watched).await
+                    {
+                        tracing::warn!(%error, episode_id, "could not save mpv progress");
+                    }
+                }
+            }
+            if let Err(error) = save_mpv_progress(&state.pool, episode_id, position, watched).await
+            {
+                tracing::warn!(%error, episode_id, "could not flush final mpv progress");
+            }
+        } else if let Ok(Err(error)) = opened {
+            tracing::warn!(%error, episode_id, "could not connect to mpv IPC pipe");
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pipe;
+    if let Err(error) = child.wait().await {
+        tracing::warn!(%error, episode_id, "error while waiting for mpv to exit");
+    }
+}
+
+async fn save_mpv_progress(
+    pool: &sqlx::SqlitePool,
+    episode_id: i64,
+    position_sec: f64,
+    watched: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO progress(episode_id,position_sec,watched) VALUES(?,?,?) ON CONFLICT(episode_id) DO UPDATE SET position_sec=excluded.position_sec,watched=MAX(progress.watched,excluded.watched),updated_at=datetime('now')")
+        .bind(episode_id)
+        .bind(position_sec.max(0.0))
+        .bind(watched)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 async fn add_page() -> Html<String> {
