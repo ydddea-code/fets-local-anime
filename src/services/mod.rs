@@ -1,5 +1,6 @@
 pub mod hls;
 pub mod metadata;
+pub mod mpv;
 pub mod parser;
 pub mod probe;
 pub mod subtitles;
