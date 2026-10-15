@@ -1,132 +1,45 @@
-# Anime Stream
+# Fets Anime
 
-Fets Anime adalah aplikasi desktop Windows 10/11 x64 untuk mengelola dan menonton file anime milik pengguna. Shell native memakai Tauri 2 dan WebView2; backend axum berjalan di proses yang sama pada alamat loopback dengan port acak. Aplikasi tidak mengunduh atau mengambil video dari situs pihak ketiga.
+Fets Anime adalah aplikasi desktop Windows 10/11 x64 untuk mengelola dan menonton anime dari file video di komputer sendiri.
 
-## Menjalankan aplikasi desktop (Windows)
+**Versi:** 0.1.0
 
-Prasyarat untuk build: Rust stable, Visual Studio Build Tools dengan workload C++, dan WebView2 Runtime. Jalankan perintah berikut dari `src-tauri`:
+## Unduh dan pasang
 
-```powershell
-cargo install tauri-cli --version "^2"
-cargo tauri dev
-```
+Unduh installer Windows dari [GitHub Releases](https://github.com/ydddea-code/fets-local-anime/releases/latest), lalu buka file `.exe`. Installer memasang aplikasi untuk akun Windows Anda dan membuat shortcut di Start Menu serta Desktop. Jika diperlukan, installer juga menyiapkan WebView2.
 
-Build release lokal:
+Setelah terpasang, buka **Fets Anime** dari Start Menu atau Desktop.
 
-```powershell
-cargo tauri build
-```
+## Mulai menonton
 
-Data aplikasi desktop disimpan di `%APPDATA%\FetsAnime` melalui direktori data Tauri. Pengaturan dibuat otomatis saat pertama kali dijalankan. `config.toml` tidak diperlukan.
+1. Buka **Pengaturan → Tambah Folder** dan pilih folder koleksi anime.
+2. Tunggu pemindaian selesai; file video akan muncul di perpustakaan.
+3. Pilih anime dan episode untuk mulai menonton.
 
-Di halaman **Pengaturan**, tombol **Tambah Folder** membuka pemilih folder native Windows. Folder disimpan sebagai library dan langsung dipindai; folder yang diseret dari File Explorer juga dapat ditambahkan. Progres scan dikirim ke jendela aplikasi melalui SSE. Pengaturan pemutar, tema, watcher, dan jalur program tersimpan otomatis.
+File baru di folder library akan terdeteksi otomatis. Untuk memulai ulang pemindaian, pilih **Pindai ulang** di Pengaturan.
 
-Installer NSIS tersedia untuk pemasangan per pengguna tanpa hak administrator. Installer membuat shortcut Start Menu, memakai WebView2 bootstrapper jika runtime belum tersedia, dan saat uninstall menawarkan penghapusan data `%APPDATA%\FetsAnime`.
+## Pemutar dan data
 
-### Sidecar media untuk paket Windows
+Pemutar otomatis mencoba video bawaan aplikasi, lalu beralih ke mpv bila pemutaran gagal. mpv, FFmpeg, dan ffprobe disertakan dalam installer. Jalurnya dapat diganti di Pengaturan bila diperlukan.
 
-Paket installer menyertakan FFmpeg (build GPL shared) dan mpv. Untuk menyiapkan binary sebelum build rilis, pasang 7-Zip dan jalankan dari PowerShell:
+Database, pengaturan, thumbnail, dan cache disimpan di `%APPDATA%\FetsAnime`. Saat menghapus aplikasi, installer menanyakan apakah data tersebut ikut dihapus.
+
+Fets Anime hanya memutar file milik pengguna; aplikasi tidak mengambil atau mengunduh video dari situs lain. Penggunaan AniList untuk metadata bersifat opsional.
+
+## Membuat installer dari source
+
+Di Windows 10/11 x64, pasang Rust stable, Visual Studio Build Tools (C++), dan 7-Zip. Dari folder repo jalankan:
 
 ```powershell
 .\scripts\fetch-sidecars.ps1
+cargo install tauri-cli --version "^2"
+cd src-tauri
+cargo tauri build --bundles nsis
 ```
 
-Skrip mengambil rilis Windows x64 terbaru dari proyek build yang ditautkan dalam `licenses/README.md`, menaruh executable dan DLL pendukung di `src-tauri/binaries`, serta menyalin notice lisensi dan versi ke `licenses/third-party`. Folder executable dibuat saat persiapan build dan tidak dimasukkan ke Git. Build rilis harus menyertakan sumber yang sesuai untuk versi binary tersebut; lihat `licenses/third-party/VERSIONS.txt` yang dihasilkan skrip. CI mengunduh sidecar dan mengunggah installer NSIS sebagai artifact.
+Installer dibuat di `src-tauri\target\release\bundle\nsis`. Build menyertakan FFmpeg dan mpv GPL; periksa `licenses/README.md` dan notice yang diunduh sebelum mendistribusikan ulang.
 
-Di aplikasi, jalur FFmpeg dan mpv dapat diganti di Pengaturan. Sidecar dicari otomatis dari resource installer sebelum PATH dan lokasi instalasi umum.
-
-## Menjalankan backend untuk pengembangan
-
-Backend dapat dijalankan sendiri untuk pengembangan dengan `cargo run`. Mode ini bukan alur pemakaian aplikasi desktop.
-
-## Prasyarat
-
-- Rust stable
-- FFmpeg dan ffprobe diperlukan untuk info stream, thumbnail, ekstrak subtitle embedded, dan HLS. Direct play serta subtitle eksternal tetap berfungsi tanpa keduanya.
-
-## Mode server pengembangan (opsional)
-
-Salin `config.example.toml` menjadi `config.toml`, lalu atur folder library:
-
-```toml
-[server]
-host = "127.0.0.1"
-port = 8080
-
-[library]
-paths = ["D:/Anime"]
-extensions = ["mkv", "mp4", "webm", "avi", "m4v"]
-scan_on_startup = false
-watch = false
-
-[data]
-dir = "./data"
-
-[ffmpeg]
-ffmpeg_path = "ffmpeg"
-ffprobe_path = "ffprobe"
-hls_segment_seconds = 6
-max_concurrent_transcodes = 2
-
-[metadata]
-anilist_enabled = false
-cache_ttl_hours = 24
-
-[auth]
-enabled = false
-password = ""
-```
-
-Jalankan `cargo run`, lalu buka [http://127.0.0.1:8080](http://127.0.0.1:8080). Database disimpan di `data/app.db`. Server default hanya mendengarkan localhost. Override konfigurasi dapat memakai environment variable, misalnya `ANIME_SERVER__PORT=9000`.
-
-Halaman Pengaturan menjalankan scan. Nama file yang cocok akan diparsing; file yang tidak cocok tetap masuk memakai nomor fallback berdasarkan urutan nama file. Path yang dikirim saat menambah file manual harus berada di dalam folder library yang dikonfigurasi.
-
-### Akses LAN
-
-Autentikasi memakai satu password dan cookie sesi HttpOnly yang berlaku tujuh hari (sesi disimpan di memori dan berakhir saat server dimulai ulang). Aktifkan dengan konfigurasi berikut atau environment variable `ANIME_AUTH__ENABLED=true` dan `ANIME_AUTH__PASSWORD=...`:
-
-```toml
-[server]
-host = "0.0.0.0"
-
-[auth]
-enabled = true
-password = "ganti-dengan-password-kuat"
-```
-
-Jangan mengekspos server ke internet tanpa TLS dan perlindungan jaringan yang sesuai. Tanpa autentikasi, gunakan bind localhost.
-
-## Platform
-
-Aplikasi ini adalah aplikasi desktop Windows 10/11 (x64). Build lintas platform
-(macOS/Linux) dan Docker tidak lagi didukung; gunakan langsung dari Windows.
-
-## Endpoint
-
-- `GET /` — library dan lanjutkan menonton
-- `GET /add` — form tambah anime
-- `GET /anime/:id` — episode dan form tambah episode manual
-- `GET /watch/:id` — pemutar, progres, dan episode berikutnya
-- `GET /stream/:id` — direct play dengan byte ranges
-- `GET /hls/:id/master.m3u8` dan `/hls/:id/:segment` — HLS on-demand
-- `GET /thumb/:id.jpg` — thumbnail episode
-- `GET /subs/:id.vtt` — subtitle WebVTT
-- `GET /api/episode/:id/subtitles` — daftar subtitle
-- `GET /api/anime`, `POST /api/anime`
-- `POST /api/anime/:id/episodes`
-- `POST /api/anime/:id/refresh-metadata` — isi metadata dari AniList saat diaktifkan
-- `PATCH /api/anime/:id/metadata-lock` — kunci/perbolehkan pembaruan metadata
-- `POST /api/library/scan`
-- `GET /api/progress/:id`, `POST /api/progress/:id`
-- `GET /health`
-
-Klien memakai ID database untuk streaming dan tidak dapat memilih path arbitrer. Server canonicalize dan memeriksa path terhadap folder library sebelum membaca file.
-
-## Status
-
-Desktop Windows memakai Tauri 2, embedded axum dengan port localhost acak, penyimpanan `%APPDATA%\FetsAnime`, pengaturan auto-save, native folder picker, drag/drop, scan progress/SSE, watcher, dan integrasi mpv IPC untuk sinkronisasi progres. `hls.js` 1.7.3 disertakan lokal. AniList metadata tetap opsional; thumbnail perpustakaan disimpan lokal. CI hanya berjalan di `windows-latest`: format Rust dan Tauri, clippy, tes, lalu membuat installer NSIS Windows x64 dan mengunggahnya sebagai artifact. Tidak ada fitur pengambilan video dari situs pihak ketiga.
-
-## Pemeriksaan
+## Pemeriksaan source
 
 ```powershell
 cargo fmt --all
