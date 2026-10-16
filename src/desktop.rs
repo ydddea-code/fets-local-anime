@@ -92,7 +92,8 @@ pub fn no_window(command: &mut tokio::process::Command) {
 pub fn path_eq(left: &std::path::Path, right: &std::path::Path) -> bool {
     #[cfg(windows)]
     {
-        left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
     }
     #[cfg(not(windows))]
     {

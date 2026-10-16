@@ -768,6 +768,7 @@ async fn play_with_mpv(
     let args = mpv::build_args_with_parent(&pipe, input.position_sec, &media_path, None);
     tracing::info!(episode_id = input.episode_id, reason = ?input.reason, "launching mpv playback");
     let (session, os_pid) = MpvSession::spawn(&mpv_path, &id, &args)
+        .await
         .map_err(|error| AppError::Unavailable(format!("mpv tidak dapat dijalankan: {error}")))?;
     // Tell the Tauri shell which mpv process to reparent into the app frame.
     state.notify_mpv_launch(&id, os_pid, input.episode_id);
@@ -857,9 +858,7 @@ async fn watch_mpv_progress(
                 loop {
                     match handle.read_line().await {
                         Ok(line) if !line.is_empty() => {
-                            if let Ok(event) =
-                                serde_json::from_str::<serde_json::Value>(&line)
-                            {
+                            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
                                 if let Some((new_position, new_watched)) =
                                     mpv::progress_from_event(&event)
                                 {
@@ -1421,7 +1420,8 @@ async fn extract_embedded_subtitles(state: &AppState, episode_id: i64, video_pat
                 continue;
             }
         }
-        let mut command = tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path);
+        let mut command =
+            tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path);
         command
             .args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(video_path)
@@ -1510,12 +1510,9 @@ async fn subtitle_vtt(
                 .args(["-f", "webvtt", "-y"])
                 .arg(&cached);
             crate::desktop::no_window(&mut command);
-            let result = command
-                .output()
-                .await
-                .map_err(|e| {
-                    AppError::BadRequest(format!("ffmpeg could not extract subtitle: {e}"))
-                })?;
+            let result = command.output().await.map_err(|e| {
+                AppError::BadRequest(format!("ffmpeg could not extract subtitle: {e}"))
+            })?;
             if !result.status.success() {
                 return Err(AppError::BadRequest(
                     String::from_utf8_lossy(&result.stderr).trim().to_owned(),
