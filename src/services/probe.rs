@@ -49,11 +49,15 @@ pub fn parse_probe_json(input: &str) -> Result<ProbeInfo, String> {
 }
 
 pub async fn probe(executable: &str, path: &Path) -> Result<ProbeInfo, String> {
-    let output = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("-v").arg("error")
         .arg("-show_entries").arg("format=duration,format_name:stream=index,codec_type,codec_name,channels:stream_tags=language,title")
         .arg("-of").arg("json")
-        .arg(path)
+        .arg(path);
+    // Never flash a console window while scanning (Windows).
+    crate::desktop::no_window(&mut command);
+    let output = command
         .output().await.map_err(|e| format!("could not start ffprobe: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
@@ -71,11 +75,14 @@ pub async fn generate_thumbnail(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let result = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(["-hide_banner", "-loglevel", "error", "-ss", "30", "-i"])
         .arg(input)
         .args(["-frames:v", "1", "-vf", "scale=480:-2", "-y"])
-        .arg(output)
+        .arg(output);
+    crate::desktop::no_window(&mut command);
+    let result = command
         .output()
         .await
         .map_err(|e| format!("could not start ffmpeg: {e}"))?;

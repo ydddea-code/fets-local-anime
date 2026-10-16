@@ -1,9 +1,10 @@
 //! mpv integration: executable discovery, argument building, and a JSON IPC
-//! client over a Windows named pipe so playback progress in mpv is written
-//! back to the database ("lanjutkan menonton" keeps working).
+//! client over a Windows named pipe (or Unix socket) so playback progress in
+//! mpv is written back to the database ("lanjutkan menonton" keeps working).
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::process::{Child, Command};
 
 /// Locate mpv.exe. Order: explicit setting, bundled sidecar next to the
@@ -89,9 +90,21 @@ fn candidates() -> Vec<PathBuf> {
     list
 }
 
-/// Unique mpv IPC pipe name for one launched session.
+/// Unique mpv IPC pipe name for one launched session. On Windows this is a
+/// named pipe; elsewhere a unix socket path with a guaranteed-safe length.
 pub fn ipc_pipe(id: &str) -> String {
-    format!(r"\\.\pipe\fets-anime-mpv-{id}")
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\fets-anime-mpv-{id}")
+    }
+    #[cfg(not(windows))]
+    {
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in id.as_bytes() {
+            hash = (hash ^ *byte).wrapping_mul(0x100000001b3);
+        }
+        format!("/tmp/fets-mpv-{:016x}.sock", hash)
+    }
 }
 
 /// Build the fixed mpv argument list for one episode. The input path must be
@@ -107,24 +120,28 @@ pub fn build_args_with_parent(
     file: &Path,
     parent_hwnd: Option<u32>,
 ) -> Vec<String> {
+    let _ = parent_hwnd; // Reparenting happens after launch via SetParent.
     let start = if start_sec.is_finite() && start_sec > 0.5 {
         format!("--start={start_sec:.3}")
     } else {
         "--start=0".to_string()
     };
-    let mut args = vec![
-        "--force-window=yes".into(),
+    vec![
+        // Always show a real video window; mpv used to "play" invisibly for
+        // some files which looked like nothing was happening.
+        "--force-window=immediate".into(),
         "--keep-open=yes".into(),
+        // Idle mode keeps the IPC server alive so progress reporting never
+        // dies mid-session.
+        "--idle=once".into(),
+        // Borderless: the desktop shell reparents this window into the app.
+        "--border=no".into(),
         start,
         "--sub-auto=fuzzy".into(),
         format!("--input-ipc-server={pipe}"),
         "--no-terminal".into(),
         file.to_string_lossy().into_owned(),
-    ];
-    if let Some(hwnd) = parent_hwnd.filter(|hwnd| *hwnd != 0) {
-        args.insert(0, format!("--wid={hwnd}"));
-    }
-    args
+    ]
 }
 
 /// Convert an mpv property-change event into a database progress update.
@@ -159,17 +176,32 @@ pub struct MpvSession {
 }
 
 impl MpvSession {
-    /// Spawn mpv (visible window on purpose — unlike ffmpeg it must show UI).
-    pub fn spawn(mpv_path: &Path, id: &str, args: &[String]) -> Result<Self, String> {
-        let mut command = Command::new(mpv_path);
-        command.args(args).kill_on_drop(true);
-        let child = command
+    /// Spawn mpv with its own visible window (unlike ffmpeg it must show UI).
+    /// Uses std::process so no console is ever allocated on Windows, and
+    /// redirects stdio so nothing can block or flash. Returns both the tokio
+    /// child handle (for waiting/kill_on_drop) and the raw OS pid, which the
+    /// desktop shell can use to reparent mpv's window into the app frame.
+    pub fn spawn(mpv_path: &Path, id: &str, args: &[String]) -> Result<(Self, u32), String> {
+        let std_child = std::process::Command::new(mpv_path)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("could not start mpv: {e}"))?;
-        Ok(Self {
-            id: id.to_string(),
-            child,
-        })
+        let os_pid = std_child.id();
+        let mut child = Child::from_std(std_child, &tokio::runtime::Handle::current());
+        child.kill_on_drop(true);
+        if child.id().is_none() {
+            return Err("mpv process exited immediately after launch".to_string());
+        }
+        Ok((
+            Self {
+                id: id.to_string(),
+                child,
+            },
+            os_pid,
+        ))
     }
 
     /// Take ownership of the child handle (used by the IPC watcher task).
@@ -325,6 +357,62 @@ pub mod pipe_io {
     }
 }
 
+#[cfg(not(windows))]
+pub mod pipe_io {
+    //! Non-Windows IPC backend: mpv listens on a unix socket; we connect to
+    //! it with the same line-oriented JSON protocol used over named pipes.
+
+    use std::io;
+    use tokio::net::UnixStream;
+    use tokio::sync::Mutex;
+
+    pub struct PipeHandle {
+        stream: Mutex<UnixStream>,
+    }
+
+    impl PipeHandle {
+        /// Connect to mpv's IPC socket, retrying until mpv has created it.
+        pub async fn open(pipe_path: &str, retries: u32) -> io::Result<Self> {
+            let mut last_error = io::Error::other("mpv socket was never created");
+            for _ in 0..retries.max(1) {
+                match UnixStream::connect(pipe_path).await {
+                    Ok(stream) => return Ok(Self { stream: Mutex::new(stream) }),
+                    Err(error) => last_error = error,
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(last_error)
+        }
+
+        pub async fn write_line(&self, payload: &str) -> io::Result<()> {
+            use tokio::io::AsyncWriteExt;
+            let mut stream = self.stream.lock().await;
+            stream.write_all(payload.as_bytes()).await?;
+            stream.write_all(b"\n").await?;
+            stream.flush().await
+        }
+
+        /// Read one newline-delimited JSON line. Empty string means mpv
+        /// closed the connection (the player window was closed).
+        pub async fn read_line(&self) -> io::Result<String> {
+            use tokio::io::AsyncBufReadExt;
+            let mut stream = self.stream.lock().await;
+            let mut reader = (&mut *stream);
+            let mut line = String::new();
+            let count = tokio::io::BufReader::new(&mut reader)
+                .read_line(&mut line)
+                .await?;
+            if count == 0 {
+                return Ok(String::new());
+            }
+            while line.ends_with('\n') || line.ends_with('\r') {
+                line.pop();
+            }
+            Ok(line)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,12 +424,22 @@ mod tests {
             123.456,
             Path::new(r"D:\Anime\Frieren\Frieren - 01.mkv"),
         );
-        assert_eq!(args[0], "--force-window=yes");
+        assert_eq!(args[0], "--force-window=immediate");
         assert_eq!(args[1], "--keep-open=yes");
-        assert_eq!(args[2], "--start=123.456");
-        assert_eq!(args[3], "--sub-auto=fuzzy");
-        assert_eq!(args[4], r"--input-ipc-server=\\.\pipe\fets-anime-mpv-abc");
+        assert_eq!(args[2], "--idle=once");
+        assert_eq!(args[3], "--border=no");
+        assert_eq!(args[4], "--start=123.456");
+        assert_eq!(args[5], "--sub-auto=fuzzy");
+        assert_eq!(args[6], r"--input-ipc-server=\\.\pipe\fets-anime-mpv-abc");
         assert_eq!(args.last().unwrap(), r"D:\Anime\Frieren\Frieren - 01.mkv");
+    }
+
+    #[test]
+    fn embedded_parent_hwnd_no_longer_uses_wid() {
+        // --wid was the source of "video tidak terputar": mpv rendered into
+        // a stale webview child window. Reparenting now happens after launch.
+        let args = build_args_with_parent("pipe", 0.0, Path::new("x.mkv"), Some(12345));
+        assert!(!args.iter().any(|a| a.starts_with("--wid=")));
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub struct AppState {
     pub mpv_sessions: Arc<Mutex<HashMap<String, Child>>>,
     pub watch_roots: Arc<Mutex<Vec<PathBuf>>>,
     pub watch_events: Arc<Mutex<VecDeque<()>>>,
+    pub mpv_launch_listener:
+        Arc<RwLock<Option<Box<dyn Fn(&str, u32, i64) + Send + Sync + 'static>>>>,
 }
 
 impl AppState {
@@ -50,10 +52,29 @@ impl AppState {
             mpv_sessions: Arc::default(),
             watch_roots: Arc::default(),
             watch_events: Arc::default(),
+            mpv_launch_listener: Arc::default(),
         }
     }
 
     pub fn settings_snapshot(&self) -> Settings {
         self.settings.read().expect("settings lock").clone()
+    }
+
+    /// Announce a freshly launched mpv process so the desktop shell (Tauri)
+    /// can reparent its window into the application frame. The core library
+    /// stays UI-agnostic: without a registered listener this is a no-op and
+    /// mpv simply keeps its own standalone window.
+    pub fn set_mpv_launch_listener(
+        &self,
+        listener: Box<dyn Fn(&str, u32, i64) + Send + Sync + 'static>,
+    ) {
+        *self.mpv_launch_listener.write().expect("mpv listener lock") = Some(listener);
+    }
+
+    pub(crate) fn notify_mpv_launch(&self, id: &str, pid: u32, episode_id: i64) {
+        let listener = self.mpv_launch_listener.read().expect("mpv listener lock");
+        if let Some(listener) = listener.as_ref() {
+            listener(id, pid, episode_id);
+        }
     }
 }

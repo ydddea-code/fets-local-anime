@@ -13,6 +13,9 @@ use tokio::{net::TcpListener, task::JoinHandle};
 pub struct EmbeddedServer {
     pub url: String,
     pub task: JoinHandle<anyhow::Result<()>>,
+    /// Shared app state so the desktop shell can register hooks (e.g. the
+    /// mpv window-embedding listener) after startup.
+    pub state: Arc<state::AppState>,
 }
 
 /// Start the local-only backend for the desktop shell on an OS-selected port.
@@ -55,5 +58,5 @@ pub async fn start_embedded_server(data_dir: PathBuf) -> anyhow::Result<Embedded
         axum::serve(listener, app).await?;
         Ok(())
     });
-    Ok(EmbeddedServer { url, task })
+    Ok(EmbeddedServer { url, task, state })
 }

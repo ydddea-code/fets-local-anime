@@ -77,7 +77,8 @@ impl HlsManager {
             .map_err(|e| e.to_string())?;
         let playlist = directory.join("index.m3u8");
         let segments = directory.join("seg_%05d.ts");
-        let child = Command::new(ffmpeg)
+        let mut command = Command::new(ffmpeg);
+        command
             .args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(input)
             .args([
@@ -102,7 +103,9 @@ impl HlsManager {
             .arg(self.segment_seconds.to_string())
             .args(["-hls_playlist_type", "event", "-hls_segment_filename"])
             .arg(segments)
-            .arg(playlist)
+            .arg(playlist);
+        crate::desktop::no_window(&mut command);
+        let child = command
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("could not start ffmpeg: {e}"))?;

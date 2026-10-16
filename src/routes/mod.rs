@@ -757,14 +757,17 @@ async fn play_with_mpv(
     let media_path = validate_library_path(&state, &stored_path)?;
     let id = uuid::Uuid::new_v4().to_string();
     let pipe = mpv::ipc_pipe(&id);
-    let parent_hwnd = std::env::var("FETS_MPV_PARENT_HWND")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok());
-    let args = mpv::build_args_with_parent(&pipe, input.position_sec, &media_path, parent_hwnd);
+    // NOTE: we deliberately do NOT pass --wid=<webview hwnd> anymore. That
+    // made mpv render into a stale webview child window so the video never
+    // appeared ("tidak terputar"). mpv now opens its own borderless window
+    // and the desktop shell embeds it via the mpv-attached event below.
+    let args = mpv::build_args_with_parent(&pipe, input.position_sec, &media_path, None);
     tracing::info!(episode_id = input.episode_id, reason = ?input.reason, "launching mpv playback");
-    let child = MpvSession::spawn(&mpv_path, &id, &args)
-        .map_err(|error| AppError::Unavailable(format!("mpv tidak dapat dijalankan: {error}")))?
-        .into_child();
+    let (session, os_pid) = MpvSession::spawn(&mpv_path, &id, &args)
+        .map_err(|error| AppError::Unavailable(format!("mpv tidak dapat dijalankan: {error}")))?;
+    // Tell the Tauri shell which mpv process to reparent into the app frame.
+    state.notify_mpv_launch(&id, os_pid, input.episode_id);
+    let child = session.into_child();
     tokio::spawn(watch_mpv_progress(
         Arc::clone(&state),
         input.episode_id,
@@ -836,7 +839,61 @@ async fn watch_mpv_progress(
         }
     }
     #[cfg(not(windows))]
-    let _ = pipe;
+    {
+        match crate::services::mpv::pipe_io::PipeHandle::open(&pipe, 50).await {
+            Ok(handle) => {
+                let _ = handle
+                    .write_line(r#"{"command":["observe_property",1,"time-pos"]}"#)
+                    .await;
+                let _ = handle
+                    .write_line(r#"{"command":["observe_property",2,"eof-reached"]}"#)
+                    .await;
+                let mut position = 0.0;
+                let mut watched = false;
+                loop {
+                    match handle.read_line().await {
+                        Ok(line) if !line.is_empty() => {
+                            if let Ok(event) =
+                                serde_json::from_str::<serde_json::Value>(&line)
+                            {
+                                if let Some((new_position, new_watched)) =
+                                    mpv::progress_from_event(&event)
+                                {
+                                    if !new_watched {
+                                        position = new_position;
+                                    }
+                                    watched |= new_watched;
+                                    if let Err(error) = save_mpv_progress(
+                                        &state.pool,
+                                        episode_id,
+                                        position,
+                                        watched,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            %error,
+                                            episode_id,
+                                            "could not save mpv progress"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                if let Err(error) =
+                    save_mpv_progress(&state.pool, episode_id, position, watched).await
+                {
+                    tracing::warn!(%error, episode_id, "could not flush final mpv progress");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, episode_id, "could not connect to mpv IPC socket")
+            }
+        }
+    }
     if let Err(error) = child.wait().await {
         tracing::warn!(%error, episode_id, "error while waiting for mpv to exit");
     }
@@ -1360,15 +1417,16 @@ async fn extract_embedded_subtitles(state: &AppState, episode_id: i64, video_pat
                 continue;
             }
         }
-        let result = tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path)
+        let mut command = tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path);
+        command
             .args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(video_path)
             .arg("-map")
             .arg(format!("0:{stream_idx}"))
             .args(["-f", "webvtt", "-y"])
-            .arg(&output)
-            .output()
-            .await;
+            .arg(&output);
+        crate::desktop::no_window(&mut command);
+        let result = command.output().await;
         if !matches!(result, Ok(ref output) if output.status.success()) {
             continue;
         }
@@ -1438,19 +1496,22 @@ async fn subtitle_vtt(
             .join(format!("{episode_id}-{stream_idx}.vtt"));
         if !cached.is_file() {
             tokio::fs::create_dir_all(cached.parent().ok_or(AppError::NotFound)?).await?;
-            let result =
-                tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path)
-                    .args(["-hide_banner", "-loglevel", "error", "-i"])
-                    .arg(media_path)
-                    .arg("-map")
-                    .arg(format!("0:{stream_idx}"))
-                    .args(["-f", "webvtt", "-y"])
-                    .arg(&cached)
-                    .output()
-                    .await
-                    .map_err(|e| {
-                        AppError::BadRequest(format!("ffmpeg could not extract subtitle: {e}"))
-                    })?;
+            let mut command =
+                tokio::process::Command::new(&state.settings_snapshot().ffmpeg.ffmpeg_path);
+            command
+                .args(["-hide_banner", "-loglevel", "error", "-i"])
+                .arg(media_path)
+                .arg("-map")
+                .arg(format!("0:{stream_idx}"))
+                .args(["-f", "webvtt", "-y"])
+                .arg(&cached);
+            crate::desktop::no_window(&mut command);
+            let result = command
+                .output()
+                .await
+                .map_err(|e| {
+                    AppError::BadRequest(format!("ffmpeg could not extract subtitle: {e}"))
+                })?;
             if !result.status.success() {
                 return Err(AppError::BadRequest(
                     String::from_utf8_lossy(&result.stderr).trim().to_owned(),
