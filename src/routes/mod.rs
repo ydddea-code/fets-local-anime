@@ -629,15 +629,19 @@ async fn remove_library_folder(
     State(state): State<Arc<AppState>>,
     Json(input): Json<LibraryFolderInput>,
 ) -> Result<StatusCode, AppError> {
+    // Resolve the target folder to its canonical form so a user-supplied path
+    // like `c:\anime` matches stored entries such as `C:\Anime\...`.
     let target = FsPath::new(input.path.trim())
         .canonicalize()
         .map_err(|_| AppError::BadRequest("folder tidak ditemukan".into()))?;
     {
         let mut settings = state.settings.write().expect("settings lock");
-        settings
-            .library
-            .paths
-            .retain(|path| !FsPath::new(path).starts_with(&target));
+        settings.library.paths.retain(|path| {
+            let candidate = FsPath::new(path);
+            !(crate::desktop::path_eq(candidate, &target)
+                || candidate.starts_with(&target)
+                || target.starts_with(candidate))
+        });
         settings.save()?;
     }
     let rows = sqlx::query("SELECT id,file_path FROM episode")

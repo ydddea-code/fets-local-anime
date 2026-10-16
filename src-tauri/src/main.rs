@@ -2,98 +2,168 @@
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Windows-only: attach mpv's freshly created video window to the app frame.
 #[cfg(windows)]
-fn embed_mpv_window(pid: u32, parent: tauri::Window) {
-    use windows_rs::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetParent};
+mod win32 {
+    use std::ffi::c_void;
 
-    std::thread::spawn(move || {
-        // mpv creates its window a moment after launch; poll for up to ~10s.
-        for _ in 0..40 {
-            let mut found = None::<isize>;
-            unsafe {
-                EnumWindows(
-                    Some(|hwnd, lparam| {
-                        let mut process_id = 0u32;
-                        GetWindowThreadProcessId(hwnd, &mut process_id);
-                        if process_id == *(lparam as *const u32) && hwnd != 0 {
-                            found = Some(hwnd);
-                            0 // stop enumerating
-                        } else {
-                            1
-                        }
-                    }),
-                    &pid as *const u32 as isize,
-                );
-            }
-            if let Some(hwnd) = found.filter(|_| unsafe { IsWindowVisible(hwnd) } != 0) {
-                let Ok(child_rect) = get_window_rect(hwnd) else {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    continue;
-                };
-                if child_rect.is_empty() {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    continue;
-                }
-                if let (Ok(scale_factor), Ok(inner)) = (parent.scale_factor(), parent.inner_size())
-                {
-                    let width = inner.width as f64 / scale_factor;
-                    let height = inner.height as f64 / scale_factor;
-                    unsafe {
-                        SetParent(hwnd, parent.hwnd().map(|h| h.0 as isize).unwrap_or(0));
-                        set_window_pos_fill(hwnd, width as i32, height as i32);
-                    }
-                    tracing::info!(pid, "mpv window embedded into Fets Anime frame");
-                    return;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        tracing::warn!(pid, "mpv window not found; playback continues standalone");
-    });
-}
+    pub type Hwnd = *mut c_void;
+    pub type EnumWindowsProc = unsafe extern "system" fn(Hwnd, isize) -> isize;
 
-#[cfg(windows)]
-fn get_window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+    pub const GWL_STYLE: i32 = -16;
+    pub const WS_CHILD: usize = 0x0000_0010;
+    pub const WS_VISIBLE: usize = 0x1000_0000;
+    pub const WS_CAPTION: usize = 0x00C0_0000;
+    pub const WS_THICKFRAME: usize = 0x0004_0000;
+    pub const SWP_NOZORDER: u32 = 0x0004;
+    pub const SWP_SHOWWINDOW: u32 = 0x0040;
+
     #[repr(C)]
-    struct Rect {
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
+    pub struct Rect {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
     }
-    extern "system" {
-        fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
-    }
-    let mut rect = Rect {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
-        return None;
-    }
-    Some((rect.left, rect.top, rect.right, rect.bottom))
-}
 
-#[cfg(windows)]
-unsafe fn set_window_pos_fill(hwnd: isize, width: i32, height: i32) {
     extern "system" {
-        fn MoveWindow(
-            hwnd: isize,
+        pub fn EnumWindows(lp_enum_func: EnumWindowsProc, lparam: isize) -> i32;
+        pub fn GetWindowThreadProcessId(hwnd: Hwnd, lpdw_process_id: *mut u32) -> u32;
+        pub fn IsWindowVisible(hwnd: Hwnd) -> i32;
+        pub fn SetParent(hwnd_child: Hwnd, hwnd_new_parent: Hwnd) -> Hwnd;
+        pub fn GetWindowLongPtrW(hwnd: Hwnd, gn_index: i32) -> isize;
+        pub fn SetWindowLongPtrW(hwnd: Hwnd, gn_index: i32, dw_new_long: isize) -> isize;
+        pub fn GetClientRect(hwnd: Hwnd, lp_rect: *mut Rect) -> i32;
+        pub fn MoveWindow(
+            hwnd: Hwnd,
             x: i32,
             y: i32,
             width: i32,
             height: i32,
             repaint: i32,
         ) -> i32;
+        pub fn SetWindowPos(
+            hwnd: Hwnd,
+            hwnd_insert_after: Hwnd,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            flags: u32,
+        ) -> i32;
     }
-    MoveWindow(hwnd, 0, 0, width, height, 1);
+}
+
+/// Windows-only: attach mpv's freshly created video window to the app frame.
+/// mpv is launched without `--wid` (which rendered into a stale webview child
+/// and produced a black screen); instead we locate its new top-level window by
+/// OS process id and reparent it with the Win32 API.
+#[cfg(windows)]
+fn embed_mpv_window(pid: u32, parent: tauri::WebviewWindow) {
+    use win32::*;
+
+    unsafe extern "system" enum_windows_proc(hwnd: Hwnd, lparam: isize) -> isize {
+        let state = &mut *(lparam as *mut (u32, Option<Hwnd>));
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id == state.0 && !hwnd.is_null() && IsWindowVisible(hwnd) != 0 {
+            state.1 = Some(hwnd);
+            return 0; // stop enumerating
+        }
+        1
+    }
+
+    std::thread::spawn(move || {
+        // mpv creates its window a moment after launch; poll for up to ~10s.
+        for _ in 0..40 {
+            let mut state = (pid, None::<Hwnd>);
+            unsafe {
+                EnumWindows(Some(enum_windows_proc), &mut state as *mut _ as isize);
+            }
+            let Some(hwnd) = state.1 else {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            };
+            let Ok(inner) = parent.inner_size() else {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            };
+            let Ok(parent_hwnd) = parent.hwnd() else {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            };
+            unsafe {
+                // Turn mpv's window into a borderless child filling the frame.
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as usize;
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_STYLE,
+                    ((style & !(WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_VISIBLE) as isize,
+                );
+                SetParent(hwnd, parent_hwnd.0 as Hwnd);
+                MoveWindow(hwnd, 0, 0, inner.width as i32, inner.height as i32, 1);
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    inner.width as i32,
+                    inner.height as i32,
+                    SWP_NOZORDER | SWP_SHOWWINDOW,
+                );
+            }
+            tracing::info!(pid, "mpv window embedded into Fets Anime frame");
+            return;
+        }
+        tracing::warn!(pid, "mpv window not found; playback continues standalone");
+    });
+}
+
+/// Keeps the embedded mpv window in sync with the app frame while resizing.
+#[cfg(windows)]
+fn attach_resize_sync(window: tauri::WebviewWindow) {
+    use win32::*;
+
+    let on_window_event = move |event: tauri::Event| {
+        if !matches!(event, tauri::WindowEvent::Resized(_)) {
+            return;
+        }
+        let pid = match anime_stream::active_mpv_pid() {
+            Some(pid) => pid,
+            None => return,
+        };
+        let Ok(inner) = window.inner_size() else { return };
+        let mut state = (pid, None::<Hwnd>);
+        unsafe extern "system" fn proc(hwnd: Hwnd, lparam: isize) -> isize {
+            let state = &mut *(lparam as *mut (u32, Option<Hwnd>));
+            let mut process_id = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut process_id);
+            if process_id == state.0 && !hwnd.is_null() {
+                state.1 = Some(hwnd);
+                return 0;
+            }
+            1
+        }
+        unsafe {
+            EnumWindows(Some(proc), &mut state as *mut _ as isize);
+        }
+        if let Some(hwnd) = state.1 {
+            unsafe {
+                MoveWindow(hwnd, 0, 0, inner.width as i32, inner.height as i32, 1);
+            }
+        }
+    };
+    if let Err(error) = window.on_window_event(on_window_event) {
+        tracing::warn!(%error, "could not listen for resize events");
+    }
 }
 
 #[cfg(not(windows))]
-fn embed_mpv_window(_pid: u32, _parent: tauri::Window) {}
+fn embed_mpv_window(_pid: u32, _parent: tauri::WebviewWindow) {}
+
+#[cfg(not(windows))]
+fn attach_resize_sync(_window: tauri::WebviewWindow) {}
+
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -138,7 +208,7 @@ fn embed_mpv_window(_pid: u32, _parent: tauri::Window) {}
                                 return;
                             }
                         };
-                        let _window = match WebviewWindowBuilder::new(
+                        let window = match WebviewWindowBuilder::new(
                             &handle,
                             "main",
                             WebviewUrl::External(url),
@@ -156,14 +226,13 @@ fn embed_mpv_window(_pid: u32, _parent: tauri::Window) {}
                                 return;
                             }
                         };
-                        #[cfg(target_os = "windows")]
-                        match _window.hwnd() {
-                            Ok(hwnd) => {
-                                let id = hwnd.0 as usize as u32;
-                                std::env::set_var("FETS_MPV_PARENT_HWND", id.to_string());
-                            }
-                            Err(error) => tracing::warn!(%error, "mpv will use a separate window"),
-                        }
+                        // Register the hook that reparents freshly launched mpv
+                        // windows into this frame (fixes "video tidak terputar").
+                        let embed_target = window.clone();
+                        server.state.set_mpv_launch_listener(Box::new(move |_id, pid, _episode| {
+                            embed_mpv_window(pid, embed_target.clone());
+                        }));
+                        attach_resize_sync(window.clone());
                         // Keep the axum server alive for the lifetime of the window.
                         if let Err(error) = server.task.await {
                             tracing::error!(%error, "embedded server task failed");

@@ -5,6 +5,10 @@ pub mod routes;
 pub mod services;
 pub mod state;
 
+/// Pid of the mpv process that is currently (or was last) playing. Used by
+/// the desktop shell to keep the embedded mpv window in sync with the frame.
+pub use services::mpv::active_mpv_pid;
+
 use services::{hls::HlsManager, metadata::MetadataClient};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::{path::PathBuf, str::FromStr, sync::Arc};

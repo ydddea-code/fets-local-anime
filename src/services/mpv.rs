@@ -175,6 +175,19 @@ pub struct MpvSession {
     child: Child,
 }
 
+use std::sync::atomic::{AtomicU32, Ordering};
+static ACTIVE_MPV_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Pid of the mpv process that is currently (or was last) playing, or `None`
+/// if nothing has been launched yet. The desktop shell uses this to keep the
+/// embedded window sized in sync with the app frame.
+pub fn active_mpv_pid() -> Option<u32> {
+    match ACTIVE_MPV_PID.load(Ordering::SeqCst) {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
 impl MpvSession {
     /// Spawn mpv with its own visible window (unlike ffmpeg it must show UI).
     /// Uses std::process so no console is ever allocated on Windows, and
@@ -190,6 +203,7 @@ impl MpvSession {
             .spawn()
             .map_err(|e| format!("could not start mpv: {e}"))?;
         let os_pid = std_child.id();
+        ACTIVE_MPV_PID.store(os_pid, std::sync::atomic::Ordering::SeqCst);
         let mut child = Child::from_std(std_child, &tokio::runtime::Handle::current());
         child.kill_on_drop(true);
         if child.id().is_none() {
