@@ -72,14 +72,40 @@ fn health_probe(socket: SocketAddr) -> bool {
 
 use std::io::Write;
 
-/// Windows-only spawn helpers: ffmpeg/ffprobe must never flash a console
-/// window inside the desktop app (mpv intentionally shows its own window).
-#[cfg(windows)]
-pub mod windows_spawn {
-    pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    pub fn no_window(command: &mut tokio::process::Command) {
+/// Configure `tokio::process::Command` so spawned console programs
+/// (ffmpeg, ffprobe, and any helper process) never flash a CMD window inside
+/// the desktop app. On non-Windows targets this is a no-op. mpv is launched
+/// separately with std::process::Command and intentionally shows a window.
+pub fn no_window(command: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// Compare two filesystem paths the way the OS sees them: case-insensitive on
+/// Windows, exact elsewhere. Used by the library folder management so adding
+/// or removing a folder always matches the stored canonical form.
+pub fn path_eq(left: &std::path::Path, right: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+/// Canonicalize a user-supplied path string for storage/comparison, stripping
+/// the extended-length `\\?\` prefix on Windows when possible.
+pub fn canonical_display(path: &std::path::Path) -> String {
+    match path.canonicalize() {
+        Ok(resolved) => display_path(&resolved),
+        Err(_) => display_path(path),
     }
 }
 
