@@ -5,7 +5,7 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 /// Locate mpv.exe. Order: explicit setting, bundled sidecar next to the
 /// executable, PATH, then common install locations (Program Files, scoop,
@@ -101,7 +101,7 @@ pub fn ipc_pipe(id: &str) -> String {
     {
         let mut hash = 0xcbf29ce484222325u64;
         for byte in id.as_bytes() {
-            hash = (hash ^ *byte).wrapping_mul(0x100000001b3);
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
         }
         format!("/tmp/fets-mpv-{:016x}.sock", hash)
     }
@@ -190,25 +190,26 @@ pub fn active_mpv_pid() -> Option<u32> {
 
 impl MpvSession {
     /// Spawn mpv with its own visible window (unlike ffmpeg it must show UI).
-    /// Uses std::process so no console is ever allocated on Windows, and
-    /// redirects stdio so nothing can block or flash. Returns both the tokio
-    /// child handle (for waiting/kill_on_drop) and the raw OS pid, which the
-    /// desktop shell can use to reparent mpv's window into the app frame.
-    pub fn spawn(mpv_path: &Path, id: &str, args: &[String]) -> Result<(Self, u32), String> {
-        let std_child = std::process::Command::new(mpv_path)
+    /// Uses tokio::process::Command so stdio is never piped (nothing can
+    /// block or flash) and kill_on_drop guarantees no orphan mpv instances.
+    /// Returns both the session (for waiting/killing) and the raw OS pid,
+    /// which the desktop shell can use to reparent mpv's window into the app
+    /// frame. Must be called from within a tokio runtime context.
+    pub async fn spawn(mpv_path: &Path, id: &str, args: &[String]) -> Result<(Self, u32), String> {
+        let mut command = tokio::process::Command::new(mpv_path);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let child = command
             .spawn()
             .map_err(|e| format!("could not start mpv: {e}"))?;
-        let os_pid = std_child.id();
-        ACTIVE_MPV_PID.store(os_pid, std::sync::atomic::Ordering::SeqCst);
-        let mut child = Child::from_std(std_child, &tokio::runtime::Handle::current());
-        child.kill_on_drop(true);
-        if child.id().is_none() {
-            return Err("mpv process exited immediately after launch".to_string());
-        }
+        let os_pid = child
+            .id()
+            .ok_or("mpv process exited immediately after launch")?;
+        ACTIVE_MPV_PID.store(os_pid, Ordering::SeqCst);
         Ok((
             Self {
                 id: id.to_string(),
@@ -390,7 +391,11 @@ pub mod pipe_io {
             let mut last_error = io::Error::other("mpv socket was never created");
             for _ in 0..retries.max(1) {
                 match UnixStream::connect(pipe_path).await {
-                    Ok(stream) => return Ok(Self { stream: Mutex::new(stream) }),
+                    Ok(stream) => {
+                        return Ok(Self {
+                            stream: Mutex::new(stream),
+                        })
+                    }
                     Err(error) => last_error = error,
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -411,7 +416,7 @@ pub mod pipe_io {
         pub async fn read_line(&self) -> io::Result<String> {
             use tokio::io::AsyncBufReadExt;
             let mut stream = self.stream.lock().await;
-            let mut reader = (&mut *stream);
+            let mut reader = &mut *stream;
             let mut line = String::new();
             let count = tokio::io::BufReader::new(&mut reader)
                 .read_line(&mut line)
@@ -494,7 +499,11 @@ mod tests {
 
     #[test]
     fn ipc_pipe_name_format() {
-        assert_eq!(ipc_pipe("xyz123"), r"\\.\pipe\fets-anime-mpv-xyz123");
+        let name = ipc_pipe("xyz123");
+        #[cfg(windows)]
+        assert_eq!(name, r"\\.\pipe\fets-anime-mpv-xyz123");
+        #[cfg(not(windows))]
+        assert_eq!(name, "/tmp/fets-mpv-3a761725bf50cc30.sock");
     }
 
     #[tokio::test]

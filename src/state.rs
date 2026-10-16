@@ -16,6 +16,11 @@ pub struct ScanJob {
     pub current: Mutex<String>,
 }
 
+/// Callback the desktop shell (Tauri) registers to be told about freshly
+/// launched mpv processes: (session id, OS pid, episode id).
+type MpvLaunchFn = Box<dyn Fn(&str, u32, i64) + Send + Sync + 'static>;
+type MpvLaunchListener = Arc<RwLock<Option<MpvLaunchFn>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
@@ -29,8 +34,7 @@ pub struct AppState {
     pub mpv_sessions: Arc<Mutex<HashMap<String, Child>>>,
     pub watch_roots: Arc<Mutex<Vec<PathBuf>>>,
     pub watch_events: Arc<Mutex<VecDeque<()>>>,
-    pub mpv_launch_listener:
-        Arc<RwLock<Option<Box<dyn Fn(&str, u32, i64) + Send + Sync + 'static>>>>,
+    pub mpv_launch_listener: MpvLaunchListener,
 }
 
 impl AppState {
@@ -64,10 +68,7 @@ impl AppState {
     /// can reparent its window into the application frame. The core library
     /// stays UI-agnostic: without a registered listener this is a no-op and
     /// mpv simply keeps its own standalone window.
-    pub fn set_mpv_launch_listener(
-        &self,
-        listener: Box<dyn Fn(&str, u32, i64) + Send + Sync + 'static>,
-    ) {
+    pub fn set_mpv_launch_listener(&self, listener: MpvLaunchFn) {
         *self.mpv_launch_listener.write().expect("mpv listener lock") = Some(listener);
     }
 

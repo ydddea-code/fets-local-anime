@@ -58,7 +58,9 @@ pub async fn probe(executable: &str, path: &Path) -> Result<ProbeInfo, String> {
     // Never flash a console window while scanning (Windows).
     crate::desktop::no_window(&mut command);
     let output = command
-        .output().await.map_err(|e| format!("could not start ffprobe: {e}"))?;
+        .output()
+        .await
+        .map_err(|e| format!("could not start ffprobe: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
